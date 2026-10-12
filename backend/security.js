@@ -36,7 +36,9 @@ export function security(repo,{origin,production=false}){
   function resetRate(req){repo.db.prepare('DELETE FROM rate_limits WHERE key=?').run(hash(req.socket.remoteAddress||'local'))}
   async function setup(req,res){
     rate(req);if(repo.config('adminPassword'))throw fail(409,'O acesso já foi configurado.');
-    if(production||!['127.0.0.1','::1','::ffff:127.0.0.1'].includes(req.socket.remoteAddress))throw fail(403,'Configure o primeiro acesso no computador do servidor.');
+    // Em produção, o primeiro cadastro usa o domínio HTTPS validado pela aplicação.
+    // A instalação local continua restrita ao computador do servidor.
+    if(!production&&!['127.0.0.1','::1','::ffff:127.0.0.1'].includes(req.socket.remoteAddress))throw fail(403,'Configure o primeiro acesso no computador do servidor.');
     const password=req.body.password;if(typeof password!=='string'||password.length<12||password.length>200)throw fail(400,'Use uma senha de 12 a 200 caracteres.');
     const value=await passwordHash(password);repo.transaction(()=>{if(repo.config('adminPassword'))throw fail(409,'O acesso já foi configurado.');repo.setConfig('adminPassword',value)});resetRate(req);res.json(createSession(res));
   }

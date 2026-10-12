@@ -36,7 +36,7 @@ A chave de confirmação é verificada contra o conteúdo da solicitação. Dupl
 
 Uma empresa e uma senha de acesso; sessões privadas, CSRF, validação de Host/Origin, rate limit e endpoints de documentos protegidos. Somente código e assets da marca são públicos. Não há CORS aberto. Tokens são cifrados no servidor; backups portáveis nunca contêm tokens, senha ou sessões.
 
-A instância local escuta em loopback. Uma implantação futura exige HTTPS, proxy que preserve o Host configurado, Node 24+, uma instância com volume persistente, senha configurada pelo terminal e chave estável em secrets. Não foi feito deploy nem criado recurso externo. SQLite nativo em Node 24 ainda pode emitir aviso experimental; a versão 24.14.0 foi usada nos testes.
+A instância local escuta em loopback. A implantação exige HTTPS, proxy que preserve o Host configurado, Node 24+, uma instância com volume persistente e chave estável em secrets. Em produção, a primeira senha do administrador pode ser criada pelo navegador no domínio definido em APP_ORIGIN. O cadastro inicial só funciona enquanto não existe administrador e valida a origem da solicitação; cadastros simultâneos não sobrescrevem a senha. Localmente, o primeiro acesso continua restrito ao computador do servidor. SQLite nativo em Node 24 ainda pode emitir aviso experimental; a versão 24.14.0 foi usada nos testes.
 
 Backups JSON restauram os documentos, com novos IDs e sem reativar vínculos Google. A recuperação integral do mesmo ambiente requer copiar `data` com o processo parado e conservar a chave. Múltiplas réplicas e filesystem efêmero não fazem parte desta implementação.
 
