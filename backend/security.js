@@ -32,17 +32,20 @@ export function security(repo,{origin,production=false}){
     if(!req.session||req.headers['x-csrf-token']!==req.session.csrf)return res.status(403).json({error:'Sua sessão mudou. Atualize a página para continuar.'});next();
   };
   function createSession(res){const id=crypto.randomBytes(32).toString('hex'),csrf=crypto.randomBytes(32).toString('hex'),expires=Date.now()+12*3600000;repo.db.prepare('INSERT INTO sessions VALUES (?,?,?)').run(hash(id),csrf,expires);res.cookie(cookieName,id,{httpOnly:true,sameSite:'lax',secure:production,path:'/',maxAge:12*3600000});return {authenticated:true,csrf}}
-  function rate(req){const key=hash(req.socket.remoteAddress||'local'),now=Date.now(),r=repo.db.prepare('SELECT * FROM rate_limits WHERE key=?').get(key);if(r&&r.expires>now&&r.count>=8)throw fail(429,'Muitas tentativas. Aguarde 15 minutos antes de tentar novamente.');repo.db.prepare('INSERT OR REPLACE INTO rate_limits VALUES (?,?,?)').run(key,r&&r.expires>now?r.count+1:1,r&&r.expires>now?r.expires:now+900000)}
-  function resetRate(req){repo.db.prepare('DELETE FROM rate_limits WHERE key=?').run(hash(req.socket.remoteAddress||'local'))}
+  // Preserve o contador de login existente e isole o cadastro inicial.
+  const rateKey=(req,scope='login')=>hash((scope==='login'?'':scope+':')+(req.socket.remoteAddress||'local'));
+  function rate(req,scope){const key=rateKey(req,scope),now=Date.now(),r=repo.db.prepare('SELECT * FROM rate_limits WHERE key=?').get(key);if(r&&r.expires>now&&r.count>=8)throw fail(429,'Muitas tentativas. Aguarde 15 minutos antes de tentar novamente.');repo.db.prepare('INSERT OR REPLACE INTO rate_limits VALUES (?,?,?)').run(key,r&&r.expires>now?r.count+1:1,r&&r.expires>now?r.expires:now+900000)}
+  function resetRate(req,scope){repo.db.prepare('DELETE FROM rate_limits WHERE key=?').run(rateKey(req,scope))}
   async function setup(req,res){
-    rate(req);if(repo.config('adminPassword'))throw fail(409,'O acesso já foi configurado.');
+    if(repo.config('adminPassword'))throw fail(409,'O acesso já foi configurado.');
     // Em produção, o primeiro cadastro usa o domínio HTTPS validado pela aplicação.
     // A instalação local continua restrita ao computador do servidor.
     if(!production&&!['127.0.0.1','::1','::ffff:127.0.0.1'].includes(req.socket.remoteAddress))throw fail(403,'Configure o primeiro acesso no computador do servidor.');
     const password=req.body.password;if(typeof password!=='string'||password.length<12||password.length>200)throw fail(400,'Use uma senha de 12 a 200 caracteres.');
-    const value=await passwordHash(password);repo.transaction(()=>{if(repo.config('adminPassword'))throw fail(409,'O acesso já foi configurado.');repo.setConfig('adminPassword',value)});resetRate(req);res.json(createSession(res));
+    rate(req,'setup');
+    const value=await passwordHash(password);repo.transaction(()=>{if(repo.config('adminPassword'))throw fail(409,'O acesso já foi configurado.');repo.setConfig('adminPassword',value)});resetRate(req,'setup');resetRate(req);res.json(createSession(res));
   }
-  async function login(req,res){rate(req);const password=String(req.body.password||'');if(password.length>200||!await checkPassword(password,repo.config('adminPassword')||''))throw fail(401,'Senha incorreta.');if(req.session)repo.db.prepare('DELETE FROM sessions WHERE id=?').run(req.session.id);resetRate(req);res.json(createSession(res))}
+  async function login(req,res){if(!repo.config('adminPassword'))throw fail(409,'Crie o acesso do administrador para continuar.');rate(req);const password=String(req.body.password||'');if(password.length>200||!await checkPassword(password,repo.config('adminPassword')||''))throw fail(401,'Senha incorreta.');if(req.session)repo.db.prepare('DELETE FROM sessions WHERE id=?').run(req.session.id);resetRate(req);res.json(createSession(res))}
   function logout(req,res){repo.db.prepare('DELETE FROM sessions WHERE id=?').run(req.session.id);res.clearCookie(cookieName,{path:'/',secure:production,httpOnly:true,sameSite:'lax'});res.json({ok:true})}
   return {headers,requireAuth,sameOrigin,csrf,setup,login,logout,status:req=>({authenticated:!!req.session,needsSetup:!repo.config('adminPassword'),csrf:req.session?.csrf||null})};
 }

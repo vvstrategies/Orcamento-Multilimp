@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {createApp} from '../backend/app.js';
 import {checkPassword} from '../backend/security.js';
+import {hash} from '../backend/database.js';
 
 const dir=fs.mkdtempSync(path.join(os.tmpdir(),'multilimp-access-'));
 const origin='https://multilimp.example',host=new URL(origin).host;
@@ -37,6 +38,17 @@ try{
   assert.equal((await request('/api/setup',{body:{password:passwords[0]},headers:{Host:'outside.example'}})).status,421);
   assert.equal((await request('/api/setup',{body:{password:'short'}})).status,400);
   assert.equal(system.repo.config('adminPassword'),null);
+  for(let attempt=0;attempt<10;attempt++){
+    assert.equal((await request('/api/setup',{body:{password:'short'}})).status,400);
+    assert.equal((await request('/api/login',{body:{password:'before-setup'}})).status,409);
+  }
+  assert.equal(system.repo.db.prepare('SELECT COUNT(*) AS total FROM rate_limits').get().total,0);
+  // An actual setup flood is still limited, independently of legacy login failures.
+  const legacyKey=hash('127.0.0.1'),setupKey=hash('setup:127.0.0.1');
+  system.repo.db.prepare('INSERT INTO rate_limits VALUES (?,?,?)').run(setupKey,8,Date.now()+900000);
+  assert.equal((await request('/api/setup',{body:{password:passwords[0]}})).status,429);
+  system.repo.db.prepare('UPDATE rate_limits SET expires=? WHERE key=?').run(Date.now()-1,setupKey);
+  system.repo.db.prepare('INSERT INTO rate_limits VALUES (?,?,?)').run(legacyKey,8,Date.now()+900000);
 
   // Two browser tabs must never create two administrators or overwrite the winner.
   const responses=await Promise.all(passwords.map(password=>request('/api/setup',{body:{password}})));
@@ -48,6 +60,7 @@ try{
   const session=await setup.json();
   assert.equal(session.authenticated,true);
   assert.ok(session.csrf);
+  assert.equal(system.repo.db.prepare('SELECT COUNT(*) AS total FROM rate_limits').get().total,0);
   const storedHash=system.repo.config('adminPassword');
   assert.notEqual(storedHash,passwords[winner]);
   assert.equal(await checkPassword(passwords[winner],storedHash),true);
@@ -65,13 +78,17 @@ try{
   await stop();
   await start();
   assert.equal((await(await request('/api/session')).json()).needsSetup,false);
-  assert.equal((await request('/api/setup',{body:{password:'different-admin-password'}})).status,409);
+  for(let attempt=0;attempt<10;attempt++)assert.equal((await request('/api/setup',{body:{password:'different-admin-password'}})).status,409);
   assert.equal(system.repo.config('adminPassword'),storedHash);
   assert.equal((await request('/api/login',{body:{password:passwords[1-winner]}})).status,401);
   const login=await request('/api/login',{body:{password:passwords[winner]}});
   assert.equal(login.status,200);
   assert.equal((await login.json()).authenticated,true);
-  console.log('PASS: primeiro acesso pelo domínio em produção, HTTPS, origem, senha, sessão segura, concorrência, persistência e bloqueio de novo cadastro.');
+  for(let attempt=0;attempt<8;attempt++)assert.equal((await request('/api/login',{body:{password:'incorrect-password'}})).status,401);
+  assert.equal((await request('/api/login',{body:{password:passwords[winner]}})).status,429);
+  system.repo.db.prepare('UPDATE rate_limits SET expires=? WHERE key=?').run(Date.now()-1,legacyKey);
+  assert.equal((await request('/api/login',{body:{password:passwords[winner]}})).status,200);
+  console.log('PASS: primeiro acesso pelo domínio, bloqueio legado isolado, validação sem punição, limite de login/cadastro, HTTPS, sessão, concorrência e persistência.');
 }finally{
   if(server)await stop();
   fs.rmSync(dir,{recursive:true,force:true});
