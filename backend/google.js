@@ -71,7 +71,7 @@ export class GoogleIntegration{
     let c=this.requireConnection();if(!c.folderId){c=this.updateConnection(c.id,{folderId:await this.newDriveId(options)});this.repo.setConfig('googleFolder:'+c.sub,c.folderId)}
     const found=await this.driveFile(c.folderId,options);if(found&&!found.trashed)return c.folderId;
     if(found?.trashed)throw fail(409,'A pasta de orçamentos foi movida para a lixeira do Drive. Restaure a pasta antes de continuar.');
-    try{await this.request('https://www.googleapis.com/drive/v3/files?fields=id',{...options,method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:c.folderId,name:(this.repo.config('settings')?.company?.name||'Empresa')+' - Orçamentos',mimeType:'application/vnd.google-apps.folder',appProperties:{ecocleanWorkspace:this.repo.config('workspaceId')}})},'criar a pasta da empresa no Drive')}catch(error){if(error.googleStatus!==409)throw error;const existing=await this.driveFile(c.folderId,options);if(!existing||existing.trashed)throw error}
+    try{await this.request('https://www.googleapis.com/drive/v3/files?fields=id',{...options,method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:c.folderId,name:(this.repo.config('settings')?.company?.name||'Empresa')+' - Orçamentos',mimeType:'application/vnd.google-apps.folder',appProperties:{multilimpWorkspace:this.repo.config('workspaceId')}})},'criar a pasta da empresa no Drive')}catch(error){if(error.googleStatus!==409)throw error;const existing=await this.driveFile(c.folderId,options);if(!existing||existing.trashed)throw error}
     return c.folderId;
   }
   async upload(pdf,options={}){
@@ -81,8 +81,8 @@ export class GoogleIntegration{
     if(!record){const id=await this.newDriveId(options);this.repo.db.prepare('INSERT INTO drive_files VALUES (?,?,?,?,?) ON CONFLICT(pdf_id,account) DO NOTHING').run(pdf.id,c.sub,id,null,'pending');record=this.repo.db.prepare('SELECT * FROM drive_files WHERE pdf_id=? AND account=?').get(pdf.id,c.sub)}
     let file=await this.driveFile(record.drive_id,options);
     if(!file){
-      const boundary='ecoclean_'+crypto.randomBytes(16).toString('hex');
-      const meta={id:record.drive_id,name:pdf.filename,mimeType:'application/pdf',parents:[folderId],appProperties:{ecocleanPdf:pdf.id,ecocleanHash:pdf.fingerprint}};
+      const boundary='multilimp_'+crypto.randomBytes(16).toString('hex');
+      const meta={id:record.drive_id,name:pdf.filename,mimeType:'application/pdf',parents:[folderId],appProperties:{multilimpPdf:pdf.id,multilimpHash:pdf.fingerprint}};
       const body=Buffer.concat([Buffer.from(`--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(meta)}\r\n--${boundary}\r\nContent-Type: application/pdf\r\n\r\n`),fs.readFileSync(this.repo.file(pdf)),Buffer.from(`\r\n--${boundary}--\r\n`)]);
       try{file=await this.request('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,mimeType,webViewLink,trashed',{...options,method:'POST',headers:{'Content-Type':'multipart/related; boundary='+boundary},body},'anexar o PDF no Drive')}catch(error){if(error.googleStatus!==409)throw error;file=await this.driveFile(record.drive_id,options);if(!file)throw error}
     }
@@ -95,15 +95,15 @@ export class GoogleIntegration{
   async upsertEvent(calendar,id,body,workspace,options={}){
     let found=await this.event(calendar,id,options);
     if(found?.status==='cancelled')throw fail(409,'Este evento foi removido no Google. Cancele o vínculo antes de criar outro atendimento.');
-    if(found&&found.extendedProperties?.private?.ecocleanWorkspace!==workspace)throw fail(409,'O evento não pertence a este sistema. A alteração foi interrompida.');
+    if(found&&found.extendedProperties?.private?.multilimpWorkspace!==workspace)throw fail(409,'O evento não pertence a este sistema. A alteração foi interrompida.');
     if(found?.extendedProperties?.private?.intentHash===body.extendedProperties.private.intentHash)return found;
     const query='?supportsAttachments=true&sendUpdates=none';
-    if(!found){try{return await this.request(this.eventURL(calendar)+query,{...options,method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...body,id})},'criar o evento no Google Agenda')}catch(error){if(error.googleStatus!==409)throw error;found=await this.event(calendar,id,options);if(!found||found.status==='cancelled'||found.extendedProperties?.private?.ecocleanWorkspace!==workspace)throw error}}
+    if(!found){try{return await this.request(this.eventURL(calendar)+query,{...options,method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...body,id})},'criar o evento no Google Agenda')}catch(error){if(error.googleStatus!==409)throw error;found=await this.event(calendar,id,options);if(!found||found.status==='cancelled'||found.extendedProperties?.private?.multilimpWorkspace!==workspace)throw error}}
     return this.request(this.eventURL(calendar,id)+query,{...options,method:'PATCH',headers:{'Content-Type':'application/json',...(found.etag?{'If-Match':found.etag}:{})},body:JSON.stringify(body)},'atualizar o evento no Google Agenda');
   }
   async deleteEvent(calendar,id,workspace,options={}){
     const found=await this.event(calendar,id,options);if(!found||found.status==='cancelled')return;
-    if(found.extendedProperties?.private?.ecocleanWorkspace!==workspace)throw fail(409,'O evento não pertence a este sistema.');
+    if(found.extendedProperties?.private?.multilimpWorkspace!==workspace)throw fail(409,'O evento não pertence a este sistema.');
     try{await this.request(this.eventURL(calendar,id)+'?sendUpdates=none',{...options,method:'DELETE'},'cancelar o evento no Google Agenda')}catch(error){if(![404,410].includes(error.googleStatus))throw error}
   }
 }

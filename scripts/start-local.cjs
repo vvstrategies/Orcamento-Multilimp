@@ -6,9 +6,9 @@ const root = path.resolve(__dirname, '..');
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 async function main() {
-  if (Number(process.versions.node.split('.')[0]) < 24) throw Error('Instale Node.js 24 ou superior para abrir o Herboclean.');
+  if (Number(process.versions.node.split('.')[0]) < 24) throw Error('Instale Node.js 24 ou superior para abrir o Multilimp.');
   require('dotenv').config({ path: path.join(root, '.env') });
-  const port = Number(process.env.PORT || 3000);
+  const port = Number(process.env.PORT || 3102);
   const origin = process.env.APP_ORIGIN || `http://localhost:${port}`;
   const url = new URL(origin);
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw Error('PORT invalida no .env.');
@@ -24,13 +24,13 @@ async function main() {
       throw Error('A porta nao respondeu a tempo. Verifique se outro programa esta usando a porta ' + port + '.');
     }
     const data = await health.json().catch(() => null);
-    if (!health.ok || data?.status !== 'ok' || data?.product !== 'herboclean') throw Error('A porta ' + port + ' esta ocupada por outro servico. Ele foi preservado; encerre-o ou ajuste PORT e APP_ORIGIN no .env.');
+    if (!health.ok || data?.status !== 'ok' || data?.product !== 'multilimp') throw Error('A porta ' + port + ' esta ocupada por outro servico. Ele foi preservado; encerre-o ou ajuste PORT e APP_ORIGIN no .env.');
     const page = await fetch(address + '/', { signal: AbortSignal.timeout(3000), redirect: 'manual' });
-    if (!page.ok || !(await page.text()).includes('Herboclean | Orçamentos e agendamentos')) throw Error('A porta responde, mas nao entrega a pagina do Herboclean. Verifique public/index.html e o processo nessa porta.');
+    if (!page.ok || !(await page.text()).includes('Multilimp Higienização | Orçamentos e agendamentos')) throw Error('A porta responde, mas nao entrega a pagina do Multilimp. Verifique public/index.html e o processo nessa porta.');
     return true;
   }
 
-  if (await ready()) console.log('Herboclean ja estava em funcionamento.');
+  if (await ready()) console.log('Multilimp ja estava em funcionamento.');
   else {
     if (!fs.existsSync(path.join(root, 'public/index.html'))) throw Error('A pagina public/index.html nao foi encontrada. Execute node scripts/sync-ui.cjs.');
     const dir = path.resolve(root, process.env.DATA_DIR || 'data');
@@ -53,7 +53,7 @@ async function main() {
       if (child.exitCode !== null) break;
     }
     if (!running) throw Error('O servidor nao iniciou. Consulte ' + errors);
-    console.log('Herboclean iniciado em segundo plano. PID: ' + child.pid);
+    console.log('Multilimp iniciado em segundo plano. PID: ' + child.pid);
   }
   console.log('Disponivel em ' + address);
   if (!process.argv.includes('--no-open')) {

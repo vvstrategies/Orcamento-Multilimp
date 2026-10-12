@@ -14,7 +14,7 @@ export function vault(dir,provided,production=false){
   return {seal(value){const iv=crypto.randomBytes(12),cipher=crypto.createCipheriv('aes-256-gcm',key,iv),data=Buffer.concat([cipher.update(JSON.stringify(value),'utf8'),cipher.final()]);return Buffer.concat([iv,cipher.getAuthTag(),data]).toString('base64')},open(value){const data=Buffer.from(value,'base64'),decipher=crypto.createDecipheriv('aes-256-gcm',key,data.subarray(0,12));decipher.setAuthTag(data.subarray(12,28));return JSON.parse(Buffer.concat([decipher.update(data.subarray(28)),decipher.final()]).toString())}};
 }
 export function security(repo,{origin,production=false}){
-  const originURL=new URL(origin),cookieName=production?'__Host-ecoclean':'ecoclean_session';
+  const originURL=new URL(origin),cookieName=production?'__Host-multilimp':'multilimp_session';
   const token=req=>String(req.headers.cookie||'').split(';').map(x=>x.trim()).find(x=>x.startsWith(cookieName+'='))?.slice(cookieName.length+1);
   const read=req=>{const t=token(req);if(!t||!/^[a-f0-9]{64}$/.test(t))return null;return repo.db.prepare('SELECT * FROM sessions WHERE id=? AND expires>?').get(hash(t),Date.now())};
   function headers(req,res,next){

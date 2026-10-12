@@ -49,7 +49,7 @@ function publicPayment(row){return {id:row.id,proposalId:row.proposal_id,revisio
 
 export function asaasConfig(env={},origin=''){
   const sandbox=String(env.ASAAS_ENV||'').toLowerCase()==='sandbox';
-  return {apiKey:String(env.ASAAS_API_KEY||'').trim(),webhookToken:String(env.ASAAS_WEBHOOK_TOKEN||'').trim(),baseUrl:cleanBase(env.ASAAS_BASE_URL||(sandbox?'https://api-sandbox.asaas.com/v3':'https://api.asaas.com/v3')),environment:sandbox?'sandbox':'production',origin:String(origin||''),userAgent:String(env.ASAAS_USER_AGENT||'Herboclean-Orcamentos/1.0').slice(0,180)};
+  return {apiKey:String(env.ASAAS_API_KEY||'').trim(),webhookToken:String(env.ASAAS_WEBHOOK_TOKEN||'').trim(),baseUrl:cleanBase(env.ASAAS_BASE_URL||(sandbox?'https://api-sandbox.asaas.com/v3':'https://api.asaas.com/v3')),environment:sandbox?'sandbox':'production',origin:String(origin||''),userAgent:String(env.ASAAS_USER_AGENT||'Multilimp-Orcamentos/1.0').slice(0,180)};
 }
 
 export class AsaasService{
@@ -99,7 +99,7 @@ export class AsaasService{
     if(!calculated.pix||!calculated.total)throw fail(400,'Informe valores maiores que zero antes de gerar a cobrança.');
     const existing=this.rowsForRevision(proposal.id,proposal.revision),pix=existing.find(row=>row.kind==='pix'&&this.active(row)),card=existing.find(row=>row.kind==='card'&&this.active(row));
     if(pix&&card)return {payments:existing.map(publicPayment),reused:true,partial:false};
-    const payer=payerInput(rawPayer,proposal),customer=await this.customer(payer),due=dueDate(proposal.terms?.validity),base=`herboclean:${proposal.id.slice(0,24)}:r${proposal.revision}`;
+    const payer=payerInput(rawPayer,proposal),customer=await this.customer(payer),due=dueDate(proposal.terms?.validity),base=`multilimp:${proposal.id.slice(0,24)}:r${proposal.revision}`;
     const created=[],failures=[];
     const create=async(kind,payload,amount,installments)=>{try{const value=await this.request('POST','/payments',payload);created.push(this.store(proposal,kind,{...value,customer:value.customer||customer},amount,installments,due,payload.externalReference));}catch(error){failures.push(error);}};
     if(!pix)await create('pix',{customer,billingType:'PIX',value:toAmount(calculated.pix),dueDate:due,description:`Proposta ${proposal.number} · pagamento PIX`.slice(0,500),externalReference:base+':pix'},calculated.pix,1);

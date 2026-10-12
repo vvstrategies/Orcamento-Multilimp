@@ -1,11 +1,11 @@
-﻿import assert from 'node:assert/strict';
+import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {createApp} from '../backend/app.js';
 import {modelo} from '../utils/proposta.js';
 import {cleanQuote,documentHash,Repository} from '../backend/database.js';
-import {gerarPDFEcoclean} from '../utils/ecocleanPdf.js';
+import {gerarPDFMultilimp} from '../utils/multilimpPdf.js';
 import {defaultFinancialSettings,validateFinancialSettings,defaultEstimateInput,validateEstimateInput,snapshotAssumptions,calculateEstimate,roundRatio,quotedRevenue} from '../backend/finance-domain.js';
 import {HeiGITOpenRouteServiceProvider} from '../backend/routes-provider.js';
 import {financialDemo} from '../backend/finance-demo.js';
@@ -109,7 +109,7 @@ try{
  }
  const render=globalThis.EcoRenderPDF;let rendererInput;
  globalThis.EcoRenderPDF=(doc,cleaned)=>{rendererInput=cleaned;return render(doc,cleaned)};
- try{const file=await gerarPDFEcoclean(poison,{outputDir:dir});assert.equal(fs.readFileSync(file).subarray(0,5).toString(),'%PDF-');}finally{globalThis.EcoRenderPDF=render;}
+ try{const file=await gerarPDFMultilimp(poison,{outputDir:dir});assert.equal(fs.readFileSync(file).subarray(0,5).toString(),'%PDF-');}finally{globalThis.EcoRenderPDF=render;}
  for(const key of ['materialCost','fuelCost','contributionMargin','PRIVATE-COST-SENTINEL'])assert.ok(!JSON.stringify(rendererInput).includes(key));
  const pdf=await data('/api/proposals/'+q.id+'/pdf',{revision:proposal.revision});
  assert.ok(!JSON.stringify(system.repo.pdf(pdf.id).snapshot).includes('contributionMargin'));

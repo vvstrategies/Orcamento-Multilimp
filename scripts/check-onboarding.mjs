@@ -1,4 +1,4 @@
-﻿import assert from 'node:assert/strict';
+import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -20,13 +20,13 @@ async function request(url,body,method=body?'POST':'GET'){
 async function data(url,body,method){const r=await request(url,body,method),v=await r.json();assert.equal(r.status,200,JSON.stringify(v));return v}
 try{
  const state=await data('/api/session');assert.equal(state.needsSetup,true);assert.equal(state.authenticated,false);
- const html=await(await request('/')).text();assert.ok(html.includes('Herboclean | Orçamentos e agendamentos'));
+ const html=await(await request('/')).text();assert.ok(html.includes('Multilimp Higienização | Orçamentos e agendamentos'));
  // Logos desta instalação consolidada são assets públicos; isolamento é testado na base universal.
  assert.equal((await request('/api/onboarding')).status,401);
  const created=await request('/api/setup',{password:'universal-admin-test'});assert.equal(created.status,200);cookie=created.headers.get('set-cookie').split(';')[0];csrf=(await created.json()).csrf;
  assert.equal((await data('/api/session')).needsCompanySetup,true);
  const initial=await data('/api/onboarding');
- assert.equal(initial.settings.services.length,10);for(const s of initial.settings.services)assert.equal(s.unit,['Tapete','Limpeza de carpete'].includes(s.name)?'m²':'un.');assert.ok(initial.settings.services.some(s=>s.name==='Poltronas'));assert.equal(initial.required,true);assert.equal(initial.settings.company.name,'');assert.equal(initial.settings.company.logo,'');assert.equal(initial.settings.company.location,'');assert.equal(initial.settings.company.intro,'');assert.equal(initial.settings.terms.rate6,3.49);assert.equal(initial.settings.terms.fixedFee,.49);assert.equal(initial.settings.terms.installments,3);assert.equal(initial.settings.services[0].name,'Limpeza de carpete');
+ assert.equal(initial.settings.services.length,10);for(const s of initial.settings.services)assert.equal(s.unit,['Tapete','Limpeza de carpete'].includes(s.name)?'m²':'un.');assert.ok(initial.settings.services.some(s=>s.name==='Poltronas'));assert.equal(initial.required,true);assert.equal(initial.settings.company.name,'Multilimp Higienização');assert.equal(initial.settings.company.phone,'(19) 98152-7537');assert.equal(initial.settings.company.location,'Rua Ataulfo Alves, 451, Residencial Jaguari, 13473-676, Americana - SP');assert.equal(initial.settings.company.website,'https://multilimpsp.com.br/');assert.match(initial.settings.company.logo,/^data:image\/png;base64,/);assert.equal(initial.settings.company.primaryColor,'#07111f');assert.equal(initial.settings.company.accentColor,'#5b747a');assert.equal(initial.settings.terms.rate6,3.49);assert.equal(initial.settings.terms.fixedFee,.49);assert.equal(initial.settings.terms.installments,3);assert.equal(initial.settings.services[0].name,'Limpeza de carpete');
  for(const [url,body,method] of [
   ['/api/settings'],['/api/proposals'],['/api/pdfs/anything'],['/api/draft'],['/api/google/status'],['/api/backup'],
   ['/api/settings',settings,'PUT'],['/api/import',{version:4,proposals:[]}],['/api/google/connect',{}],
@@ -66,28 +66,4 @@ try{
  const reopen=new Repository(dir);initializeInstallation(reopen);assert.equal(reopen.config('companySetup').completed,true);assert.equal(reopen.config('settings').company.name,'Horizonte Engenharia');assert.equal(reopen.list().length,2);reopen.close();
 }finally{await new Promise(r=>server.close(r));system.repo.close()}
 
-// Migration: retained administrator, draft customer/items, proposals and private backup.
-const legacyDir=fs.mkdtempSync(path.join(os.tmpdir(),'universal-legacy-')),repo=new Repository(legacyDir);
-try{
- const logo=fs.existsSync('data/legacy-brand-assets/herboclean.png')?'data:image/png;base64,'+fs.readFileSync('data/legacy-brand-assets/herboclean.png').toString('base64'):'';
- const old={company:{...modelo.company(),name:'Herboclean Higienização Profissional',phone:'(11) 92612-6244',location:'ABC Paulista',intro:'A Herboclean apresenta seus serviços.',benefits:'Atendimento para empresas e residências\nHigienização de diferentes tipos de estofados e tecidos\nAtendimento no ABC Paulista e em São Paulo',logo,primaryColor:'#044c3a',accentColor:'#a7cf21'},terms:{...modelo.terms(),rate6:3.49,fixedFee:.49,installments:3}};
- repo.setConfig('settings',old);repo.setConfig('adminPassword',await passwordHash('preserved-admin-password'));
- let q=modelo.quote(old);q.client='Cliente preservado';q.address='Local preservado';q.items[0].price=350;q=repo.saveProposal(q);repo.setConfig('draft',{id:'current',quote:q});
- const original=repo.proposal(q.id);initializeInstallation(repo);
- const candidate=repo.config('companySetupDraft');assert.equal(candidate.company.name,'');assert.equal(candidate.company.logo,'');assert.equal(candidate.company.location,'');assert.equal(candidate.company.intro,'');assert.equal(candidate.company.benefits,'');assert.equal(candidate.terms.rate6,3.49);
- assert.ok(await checkPassword('preserved-admin-password',repo.config('adminPassword')));
- assert.deepEqual(repo.config('universal-before-onboarding').settings,old);
- await finishSetup(repo,settings);initializeInstallation(repo);
- assert.deepEqual(repo.proposal(q.id),original);assert.equal(repo.config('draft').quote.client,'Cliente preservado');assert.equal(repo.config('draft').quote.items[0].price,350);assert.equal(repo.config('draft').quote.company.name,settings.company.name);
- assert.ok(await checkPassword('preserved-admin-password',repo.config('adminPassword')));
- const before=structuredClone(repo.config('settings'));
- migrateServiceCatalog(repo);
- const after=repo.config('settings');
- assert.deepEqual(after.company,before.company);assert.deepEqual(after.terms,before.terms);
- assert.ok(after.services.some(s=>s.name==='Consultoria'));assert.equal(after.services.find(s=>s.name==='Poltronas').unit,'un.');
- assert.equal(after.services.find(s=>s.name==='Tapete').unit,'m²');assert.equal(after.services.find(s=>s.name==='Persiana').unit,'un.');
- assert.deepEqual(repo.proposal(q.id),original);assert.equal(repo.config('draft').quote.items[0].price,350);
- migrateServiceCatalog(repo);assert.deepEqual(repo.config('settings'),after);
-}finally{repo.close()}
-console.log('PASS: onboarding obrigatório, API bloqueada, validação, sessão retomada, configuração concorrente, empresas independentes, PDFs históricos, importação sem trocar identidade e migração preservando dados.');
-
+console.log('PASS: acesso inicial Multilimp, configuração obrigatória, catálogo padrão, dados isolados, PDFs históricos e configuração concorrente.');

@@ -7,7 +7,7 @@
   const money=v=>new Intl.NumberFormat('pt-BR',{style:'currency',currency:'BRL'}).format(v/100);
   const quoteAmount=value=>{try{return money(M.totals(value).total)}catch{return 'Confira as condições de pagamento'}};
   const date=v=>new Date(v+'T12:00:00').toLocaleDateString('pt-BR');
-  const settingsKey='ecoclean-settings-v2';
+  const settingsKey='multilimp-settings-v1';
   let settings={company:M.company(),terms:M.terms()}, q, saved=[], db, timer, toastTimer, version=0, pendingPhotos=0, lastCepLookup='', cepRequest=0;
   function toast(message){$('#toast').textContent=message;$('#toast').style.display='block';clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('#toast').style.display='none',5500)}
   settings=await EcoAuth.api('/api/settings');

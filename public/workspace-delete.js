@@ -79,7 +79,7 @@
     }
     const financeSlot=document.createElement('section');financeSlot.className='detail-section finance-detail';$('#detail-content .detail-body').appendChild(financeSlot);window.UniversalFinance?.mount(financeSlot,q,{demo});
     const profitSlot=document.createElement('section');profitSlot.className='detail-section';financeSlot.after(profitSlot);window.UniversalProfit?.mount(profitSlot,q,{demo});
-    const paymentSlot=document.createElement('section');paymentSlot.className='detail-section';profitSlot.after(paymentSlot);window.HerbocleanAsaas?.mount(paymentSlot,q,{demo});
+    const paymentSlot=document.createElement('section');paymentSlot.className='detail-section';profitSlot.after(paymentSlot);window.MultilimpAsaas?.mount(paymentSlot,q,{demo});
     const actions=[];
     actions.push(`<button class="secondary" data-edit>${demo?'Ver gerador':'Editar orçamento'}</button>`);
     

@@ -3,7 +3,7 @@ setlocal
 cd /d "%~dp0"
 where node >nul 2>nul
 if errorlevel 1 (
-  echo Instale Node.js 24 ou superior para abrir a Ecoclean.
+  echo Instale Node.js 24 ou superior para abrir a Multilimp.
   pause
   exit /b 1
 )

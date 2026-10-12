@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import crypto from 'node:crypto';
 import { fail, documentHash, cleanQuote } from './database.js';
 import { modelo } from '../utils/proposta.js';
-import { gerarPDFEcoclean } from '../utils/ecocleanPdf.js';
+import { gerarPDFMultilimp } from '../utils/multilimpPdf.js';
 import '../public/operations-model.js';
 const O=globalThis.EcoOperations;
 const money=value=>new Intl.NumberFormat('pt-BR',{style:'currency',currency:'BRL'}).format(value/100);
@@ -20,7 +20,7 @@ export class Service{
   async pdf(q,force=false){
     q=cleanQuote(q,true);const fingerprint=documentHash(q),last=this.repo.listPDFs(q.id)[0];
     if(!force&&last?.proposalVersionId===q.versionId&&last?.fingerprint===fingerprint&&fs.existsSync(this.repo.file(last)))return last;
-    const file=await gerarPDFEcoclean(q,{outputDir:this.repo.files});return this.repo.savePDF(q,file,fingerprint);
+    const file=await gerarPDFMultilimp(q,{outputDir:this.repo.files});return this.repo.savePDF(q,file,fingerprint);
   }
   async generate(id,{revision,force=false}={}){const q=this.repo.requireProposal(id);if(Number(revision)!==q.revision)throw fail(409,'O orçamento mudou. Reabra antes de gerar o PDF.');return this.pdf(q,force)}
   async schedule(id,input){
@@ -44,7 +44,7 @@ export class Service{
         const pdf=await this.pdf(q),file=await this.google.upload(pdf,{signal}),total=modelo.totals(q).pix;aborted(signal);
         const description=[`CLIENTE\n${q.client}`,`CONTATO\n${q.clientContact||'Não informado'}`,`ENDEREÇO\n${q.address}`,'SERVIÇOS\n'+q.items.map(i=>`${i.quantity} ${i.unit} · ${i.service}`).join('\n'),`VALOR NO PIX\n${money(total)}`,`ORÇAMENTO\n${q.number} · PDF versão ${pdf.version}`,q.terms.notes?`OBSERVAÇÕES\n${q.terms.notes}`:''].filter(Boolean).join('\n\n');
         const intentHash=crypto.createHash('sha256').update(JSON.stringify({values,fingerprint:pdf.fingerprint})).digest('hex');
-        const body={summary:`${q.company.name} | ${q.client} | ${q.items[0].service}`,location:q.address,description,start:{dateTime:values.start,timeZone:O.timezone},end:{dateTime:values.end,timeZone:O.timezone},attachments:[{fileUrl:file.url,fileId:file.id,title:pdf.filename,mimeType:'application/pdf'}],extendedProperties:{private:{ecocleanWorkspace:this.repo.config('workspaceId'),proposalId:id,intentHash}}};
+        const body={summary:`${q.company.name} | ${q.client} | ${q.items[0].service}`,location:q.address,description,start:{dateTime:values.start,timeZone:O.timezone},end:{dateTime:values.end,timeZone:O.timezone},attachments:[{fileUrl:file.url,fileId:file.id,title:pdf.filename,mimeType:'application/pdf'}],extendedProperties:{private:{multilimpWorkspace:this.repo.config('workspaceId'),proposalId:id,intentHash}}};
         const event=await this.google.upsertEvent(calendarId,eventId,body,this.repo.config('workspaceId'),{signal});aborted(signal);
         if(!event?.id||event.status==='cancelled')throw fail(502,'O Google não confirmou a criação do evento.');
         return this.repo.complete(id,{id,status:'scheduled',schedule:{id:active?.id||crypto.randomUUID(),...values,sync:'confirmed',eventId:event.id,eventUrl:event.htmlLink||null,calendarId,accountSub:c.sub,pdfId:pdf.id,driveId:file.id},suggestedSchedule:null},input.key,requestHash);

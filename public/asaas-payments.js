@@ -30,5 +30,5 @@ async function mount(host,quote,{demo=false}={}){
   host.querySelectorAll('[data-asaas-cancel]').forEach(button=>button.addEventListener('click',async()=>{const payment=relevant.find(x=>x.id===button.dataset.asaasCancel);if(!payment||!confirm('Cancelar este link de pagamento? O cliente não poderá mais utilizá-lo.'))return;button.disabled=true;try{await api('/api/proposals/'+encodeURIComponent(quote.id)+'/payments/'+encodeURIComponent(payment.id)+'/cancel',{},'POST');EcoStudio.notify('Link de pagamento cancelado.');await mount(host,quote,{demo});}catch(error){EcoStudio.notify(error.message);button.disabled=false;}}));
  }catch(error){if(current===serial&&host.isConnected)host.innerHTML='<h3>Pagamento</h3><p class="inline-error">'+esc(error.message)+'</p>';}
 }
-window.HerbocleanAsaas={mount};
+window.MultilimpAsaas={mount};
 })();

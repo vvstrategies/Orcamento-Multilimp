@@ -26,7 +26,7 @@ export function cleanQuote(raw,strict=false){
 export class Repository{
   constructor(dir){
     this.dir=path.resolve(dir);fs.mkdirSync(this.dir,{recursive:true});this.files=path.join(this.dir,'pdfs');fs.mkdirSync(this.files,{recursive:true});
-    this.db=new DatabaseSync(path.join(this.dir,'ecoclean.sqlite'));
+    this.db=new DatabaseSync(path.join(this.dir,'multilimp.sqlite'));
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;
       CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY,value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS proposals (id TEXT PRIMARY KEY,snapshot TEXT NOT NULL,revision INTEGER NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,archived_at TEXT);

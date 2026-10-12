@@ -1,4 +1,4 @@
-import {adoptHerboclean} from './herboclean-installation.js';
+import {seedMultilimpInstallation} from './multilimp-installation.js';
 import express from 'express';
 import {IntegrationService} from './integration-service.js';
 import {GoogleAdsProvider,MetaAdsProvider} from './ad-spend-providers.js';
@@ -23,7 +23,7 @@ import {security,vault} from './security.js';
 import {GoogleIntegration} from './google.js';
 import {Service} from './service.js';
 import {modelo} from '../utils/proposta.js';
-import {gerarPDFEcoclean} from '../utils/ecocleanPdf.js';
+import {gerarPDFMultilimp} from '../utils/multilimpPdf.js';
 import {migrateServiceCatalog} from './service-catalog.js';
 import {initializeInstallation,completed,finishSetup,validateSettings} from './onboarding.js';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
@@ -33,7 +33,7 @@ export function createApp(options={}){
   const origin=options.origin||'http://localhost:3000',production=options.production||false;
   if(production&&new URL(origin).protocol!=='https:')throw Error('APP_ORIGIN deve usar HTTPS em produção.');
   const repo=options.repo||new Repository(options.dataDir||path.join(root,'data'));
-  adoptHerboclean(repo);
+  seedMultilimpInstallation(repo);
   initializeInstallation(repo);
   migrateServiceCatalog(repo);
   const tokenVault=vault(repo.dir,options.encryptionKey,production);
@@ -49,7 +49,7 @@ export function createApp(options={}){
   app.disable('x-powered-by');app.use(sec.headers);app.use(express.json({limit:'100mb'}));
   // A Asaas chama esta rota sem sessão do navegador. O token próprio do webhook é validado no serviço.
   app.post('/api/webhooks/asaas',wrap(async(req,res)=>{await asaas.webhook(req.headers['asaas-access-token'],req.body);res.status(204).end();}));
-  app.get('/api/health',(req,res)=>res.json({status:'ok',product:'herboclean'}));
+  app.get('/api/health',(req,res)=>res.json({status:'ok',product:'multilimp'}));
   app.get('/api/session',(req,res)=>res.json({...sec.status(req),needsCompanySetup:!!req.session&&!completed(repo)}));
   app.post('/api/setup',sec.sameOrigin,wrap(sec.setup));app.post('/api/login',sec.sameOrigin,wrap(sec.login));
   app.use('/api',sec.requireAuth,sec.csrf);app.post('/api/logout',sec.logout);
@@ -85,7 +85,7 @@ export function createApp(options={}){
   app.get('/api/pdfs/:id',(req,res)=>{const pdf=repo.pdf(req.params.id);if(!pdf)throw fail(404,'PDF não encontrado.');res.type('pdf');res.set('Content-Disposition',`inline; filename="${pdf.filename.replace(/["\r\n]/g,'_')}"`);res.sendFile(repo.file(pdf))});
   app.post('/api/proposals/:id/pdf',wrap(async(req,res)=>res.json(publicPDF(await service.generate(req.params.id,req.body)))));
   app.post('/api/proposals/:id/document/refresh',wrap(async(req,res)=>{const id=req.params.id;if(service.locks.has(id))throw fail(409,'Aguarde a operação em andamento antes de atualizar o documento.');const quote=repo.requireProposal(id);if(repo.operation(id).status!=='generated')throw fail(409,'O documento é preservado após o agendamento.');const latest=repo.listPDFs(id)[0],pdf=latest?.fingerprint===documentHash(quote)?latest:await service.pdf(quote);res.json(publicPDF(pdf));}));
-  app.post('/api/preview-pdf',wrap(async(req,res)=>{const q=cleanQuote(req.body,true),file=await gerarPDFEcoclean(q,{outputDir:repo.files});try{res.type('pdf').send(fs.readFileSync(file))}finally{fs.unlinkSync(file)}}));
+  app.post('/api/preview-pdf',wrap(async(req,res)=>{const q=cleanQuote(req.body,true),file=await gerarPDFMultilimp(q,{outputDir:repo.files});try{res.type('pdf').send(fs.readFileSync(file))}finally{fs.unlinkSync(file)}}));
   app.post('/api/proposals/:id/schedule',wrap(async(req,res)=>res.json(await service.schedule(req.params.id,req.body))));
   app.post('/api/proposals/:id/schedule/cancel',wrap(async(req,res)=>res.json(await service.cancelSchedule(req.params.id,req.body))));
   app.post('/api/proposals/:id/status',wrap(async(req,res)=>res.json(await service.status(req.params.id,req.body.status,req.body))));

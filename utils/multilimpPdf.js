@@ -16,7 +16,7 @@ async function decodeImage(value) {
   return value.startsWith('data:image/webp;') ? (await Jimp.read(buffer)).getBuffer('image/png') : buffer;
 }
 
-export async function gerarPDFEcoclean(q, options = {}) {
+export async function gerarPDFMultilimp(q, options = {}) {
   q=modelo.toPublicProposal(q);
   const photos=await Promise.all(q.items.map(i=>Promise.all(i.photos.map(decodeImage))));
   const logo=q.company.logo?await decodeImage(q.company.logo):null;

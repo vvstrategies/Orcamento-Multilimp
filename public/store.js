@@ -2,7 +2,7 @@
   'use strict';
   // Adaptador local do checkpoint. A migração para o backend não altera o modelo do PDF.
   const ready=new Promise((resolve,reject)=>{
-    const request=indexedDB.open('ecoclean-propostas',3);
+    const request=indexedDB.open('multilimp-propostas',3);
     request.onupgradeneeded=()=>{
       const db=request.result;
       for(const name of ['quotes','draft','operations','pdfs'])if(!db.objectStoreNames.contains(name))db.createObjectStore(name,{keyPath:'id'});

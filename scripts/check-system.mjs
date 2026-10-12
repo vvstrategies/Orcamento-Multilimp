@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { modelo, prepararProposta } from '../utils/proposta.js';
-import { gerarPDFEcoclean } from '../utils/ecocleanPdf.js';
+import { gerarPDFMultilimp } from '../utils/multilimpPdf.js';
 import {company,settings,fees,image} from './test-company.mjs';
 const fresh=modelo.quote();
 assert.equal(fresh.company.name,'');assert.equal(fresh.company.logo,'');assert.equal(fresh.company.location,'');assert.equal(fresh.company.phone,'');assert.equal(fresh.company.intro,'');
@@ -44,10 +44,10 @@ for(const anticipation of ['yes','no'])for(const count of [1,3,6,12,21])for(cons
 example.terms=modelo.terms();example.items[0].price=0;assert.equal(modelo.totals(example).total,0);
 example.items[0].price=200;
 fs.mkdirSync('validacao',{recursive:true});
-const pdf=await gerarPDFEcoclean(normalized);fs.copyFileSync(pdf,'validacao/proposta-universal.pdf');
-fs.copyFileSync(await gerarPDFEcoclean(example),'validacao/proposta-200.pdf');
-const two=structuredClone(example);two.items.push({...modelo.item('Colchão'),price:150});fs.copyFileSync(await gerarPDFEcoclean(two),'validacao/proposta-dois-itens.pdf');
+const pdf=await gerarPDFMultilimp(normalized);fs.copyFileSync(pdf,'validacao/proposta-universal.pdf');
+fs.copyFileSync(await gerarPDFMultilimp(example),'validacao/proposta-200.pdf');
+const two=structuredClone(example);two.items.push({...modelo.item('Colchão'),price:150});fs.copyFileSync(await gerarPDFMultilimp(two),'validacao/proposta-dois-itens.pdf');
 const extensive=structuredClone(q);extensive.items=Array.from({length:20},()=>({...modelo.item('Sofá'),price:199,photos:[image]}));
-const long=await gerarPDFEcoclean(extensive);fs.copyFileSync(long,'validacao/proposta-universal-extensa.pdf');
+const long=await gerarPDFMultilimp(extensive);fs.copyFileSync(long,'validacao/proposta-universal-extensa.pdf');
 assert.equal(fs.readFileSync(pdf).subarray(0,5).toString(),'%PDF-');
 console.log('OK: identidade neutra, catálogo configurável, preços manuais, centavos, validação, legado e PDFs com múltiplas páginas.');

@@ -1,24 +1,9 @@
-import fs from 'node:fs';
-import crypto from 'node:crypto';
-import path from 'node:path';
-import {fileURLToPath} from 'node:url';
 import {Jimp} from 'jimp';
 import {modelo} from '../utils/proposta.js';
 import {fail} from './database.js';
 const U=globalThis.UniversalCompany;
-const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
-const legacyLogos=new Set(JSON.parse(fs.readFileSync(path.join(root,'backend/legacy-brand-fingerprints.json'),'utf8')));
 export function candidate(repo){
  const previous=repo.config('settings'),c=U.normalize(previous?.company);
- for(const k of ['name','tagline','intro','benefits'])if(/herboclean|ecoclean|arbo clean/i.test(c[k]))c[k]='';
- if(legacyLogos.has(crypto.createHash('sha256').update(c.logo).digest('hex')))c.logo='';
- if(c.phone==='(11) 92612-6244')c.phone='';
- if(c.location==='ABC Paulista')c.location='';
- if(c.website==='https://www.instagram.com/ecoclean_ofc/')c.website='';
- if(c.tagline==='Higienização e impermeabilização de estofados')c.tagline='';
- if(c.benefits==='Atendimento para empresas e residências\nHigienização de diferentes tipos de estofados e tecidos\nAtendimento no ABC Paulista e em São Paulo')c.benefits='';
- if(['#044c3a','#04241b'].includes(c.primaryColor))c.primaryColor=U.defaults().primaryColor;
- if(c.accentColor==='#a7cf21')c.accentColor=U.defaults().accentColor;
  return {company:c,terms:modelo.terms(),services:U.defaultServices()};
 }
 export function initializeInstallation(repo){
