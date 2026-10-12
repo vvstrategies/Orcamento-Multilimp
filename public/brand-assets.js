@@ -1,1 +1,0 @@
-globalThis.MULTILIMP_ASSETS = {};

@@ -1,11 +1,14 @@
-# Conexão Google
+# Google Agenda e Drive da Multilimp
 
-Cadastre um cliente OAuth do tipo Aplicativo Web para esta instalação. Habilite Google Calendar API e Google Drive API no projeto correspondente.
+1. No projeto Google Cloud da Multilimp, ative Google Calendar API e Google Drive API.
+2. Configure um cliente OAuth do tipo Aplicativo da Web.
+3. Cadastre o redirecionamento autorizado exatamente como a variável GOOGLE_REDIRECT_URI do servidor.
+   - Produção: https://green-chinchilla-997762.hostingersite.com/api/google/callback
+   - Local: http://localhost:3102/api/google/callback
+4. Defina GOOGLE_CLIENT_ID e GOOGLE_CLIENT_SECRET com as credenciais desse cliente. GOOGLE_CALENDAR_ID=primary usa a agenda principal da conta conectada.
+5. Mantenha GOOGLE_TOKEN_ENCRYPTION_KEY estável entre publicações. As credenciais e essa chave ficam somente nas variáveis do servidor.
+6. No aplicativo, abra Configurações → Integrações → Conectar Google e autorize a conta da Multilimp.
 
-Com APP_ORIGIN=http://localhost:3102, o callback é:
+Google Ads utiliza a conexão separada em Configurações → Integrações e o callback /api/integrations/google-ads/callback no mesmo domínio. Configure as credenciais em GOOGLE_ADS_CLIENT_ID e GOOGLE_ADS_CLIENT_SECRET.
 
-http://localhost:3102/api/google/callback
-
-Em produção, use a URL HTTPS pública exata seguida de /api/google/callback. Defina GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI e GOOGLE_CALENDAR_ID somente no ambiente do servidor.
-
-No aplicativo, abra Configurações e conecte a conta Google. Os tokens ficam criptografados no diretório de dados desta instalação; não copie banco ou chave de outra empresa.
+Se o Google retornar redirect_uri_mismatch, confira o domínio, HTTPS, caminho completo e ausência de barra adicional no redirecionamento autorizado. O valor deve coincidir exatamente com o enviado pelo aplicativo.
