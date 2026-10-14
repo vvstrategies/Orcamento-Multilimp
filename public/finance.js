@@ -81,7 +81,7 @@ function render(slot,q,view){
  const e=view.latest,r=e?.result;
  slot.innerHTML=`<div class="finance-heading"><h3>Rentabilidade estimada</h3><span class="finance-private">Uso interno</span></div><p class="hint">Custos diretos e margem deste atendimento. Estas informações não entram no PDF.</p>
  ${view.stale?`<p class="finance-alert">${view.addressChanged?'O endereço do atendimento mudou.':'Os itens ou valores do orçamento mudaram.'} ${view.editable?'A atualização automática será tentada ao abrir este detalhe; se a rota estiver indisponível, use os ajustes abaixo.':'A estimativa histórica abaixo foi preservada.'}</p>`:''}
- ${view.routeNeedsRefresh?`<p class="finance-alert">A rota automática retornou 0 km para endereços diferentes. Confira a origem e o endereço do cliente; o sistema tentará atualizar o deslocamento automaticamente.</p>`:''}
+ ${view.routeNeedsRefresh?`<p class="finance-alert">A localização usada na rota precisa ser validada para os endereços atuais. ${view.editable?'O sistema tentará recalcular o deslocamento automaticamente.':'Esta é uma estimativa histórica preservada; a distância não deve ser usada como referência sem revisão.'}</p>`:''}
  ${view.autoRouteError?`<p class="finance-alert">A rota automática não foi concluída: ${esc(view.autoRouteError)}. Revise a origem e o endereço; a próxima atualização tentará novamente.</p>`:view.routeNeedsRefresh&&view.autoRouteIssue?`<p class="finance-alert">A rota não pôde ser refeita automaticamente: ${esc(view.autoRouteIssue)}</p>`:''}
  ${metrics(view)}
  ${e?`<p class="finance-caption">Estimativa v${e.version} · ${when(e.calculatedAt)}${view.editable?'':' · Histórico preservado'}</p>

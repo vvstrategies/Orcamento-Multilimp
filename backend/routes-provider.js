@@ -1,4 +1,5 @@
 import {integrationError} from './integration-domain.js';
+import {placeFromAddress} from './address.js';
 
 export const HEIGIT_DEFAULT_BASE_URL='https://api.heigit.org';
 const timeoutMs=10000;
@@ -33,6 +34,21 @@ const safeAddress=value=>{
  return value.trim().replace(/\s+/g,' ');
 };
 
+// Confidence rates the provider's match, not compliance with the requested municipality.
+const normalizePlace=value=>String(value||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim().toLowerCase();
+const postcode=value=>String(value||'').replace(/\D/g,'');
+export function matchesRequestedPlace(address,result){
+ const expected=placeFromAddress(address),actual=result.place||{},label=placeFromAddress(result.label);
+ const state=String(actual.state||label.state||'').toUpperCase().replace(/^BR-/,''),cities=[actual.city,actual.municipality,label.city].filter(Boolean).map(normalizePlace);
+ if(expected.state&&state!==expected.state)return false;
+ if(expected.city&&!cities.includes(normalizePlace(expected.city)))return false;
+ const zip=/(?:^|[\s,])([0-9]{5}-?[0-9]{3})(?=$|[\s,])/.exec(address)?.[1];
+ if(zip&&actual.postalCode&&postcode(zip)!==postcode(actual.postalCode))return false;
+ // A city/state centroid cannot stand in for a street address.
+ if(actual.layer&&!['address','street','venue'].includes(actual.layer))return false;
+ return true;
+}
+
 /** Decoupled contract for providers that turn a full address into coordinates. */
 export class GeocodingProvider {
  constructor(){this.id='manual';this.configured=false;}
@@ -44,6 +60,7 @@ export class HeiGITPeliasGeocoder extends GeocodingProvider {
  constructor({apiKey='',baseUrl=HEIGIT_DEFAULT_BASE_URL,fetcher=fetch}={}){
   super();this.id='heigit_pelias';this.apiKey=String(apiKey||'').trim();this.baseUrl=cleanBase(baseUrl);this.fetcher=fetcher;this.configured=!!this.apiKey;
  }
+ isValidResult(address,result){return matchesRequestedPlace(address,result);}
  async geocode(address){
   const query=safeAddress(address);
   if(!this.configured)throw integrationError('NOT_CONFIGURED',503);
@@ -57,12 +74,14 @@ export class HeiGITPeliasGeocoder extends GeocodingProvider {
   const matches=(Array.isArray(body.features)?body.features:[]).map(feature=>{
    try{
     const point=coordinates(feature?.geometry?.coordinates);
-    const confidence=Number(feature?.properties?.confidence);
-    return {coordinates:point,label:typeof feature?.properties?.label==='string'?feature.properties.label:'',confidence:Number.isFinite(confidence)?confidence:null};
+    const properties=feature?.properties||{},confidence=properties.confidence==null?null:Number(properties.confidence);
+    return {coordinates:point,label:typeof properties.label==='string'?properties.label:'',confidence:Number.isFinite(confidence)?confidence:null,place:{city:properties.locality||'',municipality:properties.localadmin||'',state:properties.region_a||'',postalCode:properties.postalcode||'',layer:properties.layer||'',accuracy:properties.accuracy||''}};
    }catch{return null;}
   }).filter(Boolean);
   if(!matches.length)throw integrationError('INVALID_ADDRESS',400);
-  const first=matches[0],second=matches[1];
+  const eligible=matches.filter(match=>this.isValidResult(query,match));
+  if(!eligible.length)throw Object.assign(integrationError('AMBIGUOUS_ADDRESS',400),{message:'A localização encontrada não corresponde à cidade, ao estado ou ao CEP informado. Confira o endereço ou informe a distância manualmente.'});
+  const first=eligible[0],second=eligible[1];
   if((first.confidence!==null&&first.confidence<0.4)||(second&&first.confidence!==null&&second.confidence!==null&&Math.abs(first.confidence-second.confidence)<0.02&&Math.abs(first.coordinates.longitude-second.coordinates.longitude)+Math.abs(first.coordinates.latitude-second.coordinates.latitude)>0.01))throw integrationError('AMBIGUOUS_ADDRESS',400);
   return {...first,provider:this.id,geocodedAt:new Date().toISOString(),quota:quota(response)};
  }

@@ -21,3 +21,13 @@ O prefixo HBC e a migração de identidade da Herboclean foram excluídos; o pre
 Validação: npm test passou, incluindo edição em massa e miniaturas; npm run check passou em 107 arquivos. Uma cópia do banco de produção foi aberta e sincronizada preservando as 20 configurações existentes, 8 orçamentos, 11 versões, 7 PDFs, 6 operações, 10 clientes e 2 conexões de integração. Backup do banco realizado no diretório privado da hospedagem antes do deploy.
 
 Verificação direta no Chrome: edição em massa em dados fictícios (2 orçamentos), organização das Configurações, Financeiro em desktop e celular de 390 px, troca automática de período e ausência de erros de console. Nenhum dado de teste foi criado na produção.
+
+## Correção de localização das rotas — 14/10/2026
+
+A HeiGIT retornava uma rua homônima em outro estado com confiança 1 antes da rua correta no município solicitado. A integração aceitava a primeira opção sem validar cidade/UF, e a coordenada ficava persistida em cache.
+
+Agora os candidatos são filtrados por cidade/município, UF e CEP (quando retornado), antes da comparação de confiança. Resultados que representam apenas uma cidade ou estado são rejeitados. Os dados de localização e precisão ficam preservados junto às coordenadas. A validação usa os campos definidos na [resposta Pelias](https://github.com/pelias/documentation/blob/master/response.md).
+
+O cache de coordenadas e de rotas passa pela mesma validação, inclusive em registros anteriores. Estimativas automáticas em elaboração com rota inválida são refeitas ao abrir; distâncias manuais permanecem preservadas e históricos de atendimentos agendados/concluídos não são recalculados silenciosamente. Se uma localização válida não for encontrada, o sistema informa a necessidade de revisão ou distância manual.
+
+Validação: testes de regressão para homônimos de outros estados e municípios, CEP incompatível, centro de município, cache antigo contaminado, reutilização da rota corrigida e preservação de distância manual; npm test e npm run check passaram. Consulta real confirmou a origem em Americana–SP e deslocamento de aproximadamente 40,94 km para Campinas, com a origem aproximada pelo trecho da rua.

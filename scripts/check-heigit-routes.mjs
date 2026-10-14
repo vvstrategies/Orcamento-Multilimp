@@ -5,6 +5,7 @@ import path from 'node:path';
 import {Repository,hash} from '../backend/database.js';
 import {migrateFinance} from '../backend/finance-migration.js';
 import {RouteCache} from '../backend/route-cache.js';
+import {FinanceService} from '../backend/finance-service.js';
 import {HeiGITPeliasGeocoder,HeiGITOpenRouteServiceProvider} from '../backend/routes-provider.js';
 import {addressKey,calculateEstimate,defaultEstimateInput,defaultFinancialSettings,snapshotAssumptions} from '../backend/finance-domain.js';
 import {modelo} from '../utils/proposta.js';
@@ -55,5 +56,38 @@ try{
  repo.db.prepare('INSERT INTO finance_routes VALUES (?,?,?,?)').run('legacy-zero-route',cachedKey,JSON.stringify({id:'legacy-zero-route',distanceMeters:0,durationSeconds:0}),new Date().toISOString());
  const rebuilt=await retryCache.get(retryOrigin,cachedDestination,{originRef:{type:'company',id:'retry-company'},destinationRef:{type:'proposal',id:'retry-cache'}});
  assert.equal(rebuilt.distanceMeters,9600);assert.equal(retryDirections,3);assert.equal(repo.db.prepare('SELECT id FROM finance_routes WHERE id=?').get('legacy-zero-route'),undefined);
+ // A high confidence homonym in another state must lose to the correct municipality.
+ const office='Rua Ataulfo Alves, 451, Residencial Jaguari, 13473-676, Americana - SP';
+ const client='Avenida de Teste, 100, Campinas - SP, 13045-603, Brasil';
+ const feature=(point,properties)=>({geometry:{coordinates:point},properties});
+ const wrong=feature([-48.798491,-26.278708],{label:'Rua Ataulfo Alves 451, Santa Catarina, Brasil',confidence:1,region_a:'SC',localadmin:'Joinville',locality:'Santa Catarina',postalcode:'89228-261',layer:'address'});
+ const correct=feature([-47.3093,-22.71723],{label:'Rua Ataulfo Alves, Americana, SP, Brasil',confidence:0.8,region_a:'SP',locality:'Americana',layer:'street',accuracy:'centroid'});
+ const otherCity=feature([-47.756432,-21.187409],{label:'Rua Ataulfo Alves, Ribeirão Preto, SP, Brasil',confidence:0.8,region_a:'SP',locality:'Ribeirão Preto',layer:'street'});
+ const destinationFeature=feature([-47.036554,-22.928011],{label:'Avenida de Teste 100, Campinas, SP, Brasil',confidence:1,region_a:'SP',locality:'Campinas',postalcode:'13045-603',layer:'address'});
+ const reply=features=>({ok:true,status:200,headers:headers({}),json:async()=>({features})});
+ let strictCalls=0;
+ const strictGeo=new HeiGITPeliasGeocoder({apiKey:'TEST',fetcher:async url=>{strictCalls++;return reply(url.searchParams.get('text').includes('Ataulfo')?[wrong,correct,otherCity]:[destinationFeature]);}});
+ const checked=await strictGeo.geocode(office);assert.deepEqual(checked.coordinates,{longitude:-47.3093,latitude:-22.71723});assert.equal(checked.place.city,'Americana');
+ for(const features of [[wrong],[otherCity],[{...correct,properties:{...correct.properties,postalcode:'99999-999'}}],[{...correct,properties:{...correct.properties,layer:'locality'}}]]){
+  await assert.rejects(new HeiGITPeliasGeocoder({apiKey:'TEST',fetcher:async()=>reply(features)}).geocode(office),e=>e.integrationCode==='AMBIGUOUS_ADDRESS');
+ }
+ // Old geocoding AND route cache entries are invalidated; a normal route refresh cannot perpetuate them.
+ const wrongPoint={longitude:-48.798491,latitude:-26.278708},destinationPoint={longitude:-47.036554,latitude:-22.928011};
+ const strictRoutes={id:'strict-routes',configured:true,route:async(from,to)=>{assert.deepEqual(from,checked.coordinates);assert.deepEqual(to,destinationPoint);return {distanceMeters:41000,durationSeconds:3000};}};
+ const strictCache=new RouteCache(repo,strictRoutes,{geocoder:strictGeo,directionsDailyLimit:100,geocodingDailyLimit:100});
+ const stale={addressKey:addressKey(office),addressSnapshot:office,coordinates:wrongPoint,label:wrong.properties.label,confidence:1};
+ strictCache.geocodes.save('address',addressKey(office),addressKey(office),stale);strictCache.geocodes.save('company','operational',addressKey(office),stale);
+ const badRoute={id:'wrong-state-route',origin:office,destination:client,originCoordinatesSnapshot:wrongPoint,destinationCoordinatesSnapshot:destinationPoint,distanceMeters:600870,durationSeconds:27660};
+ const strictKey=hash(JSON.stringify([strictRoutes.id,addressKey(office),addressKey(client),{profile:'driving-car'}]));repo.db.prepare('INSERT INTO finance_routes VALUES (?,?,?,?)').run(badRoute.id,strictKey,JSON.stringify(badRoute),new Date().toISOString());
+ assert.equal(strictCache.isCurrent(badRoute),false);
+ const repaired=await strictCache.get(office,client);assert.equal(repaired.distanceMeters,41000);assert.equal(strictCalls,3);assert.equal(strictCache.isCurrent(repaired),true);assert.equal(strictCache.isCurrent(badRoute),false);
+ const reused=await strictCache.get(office,client);assert.equal(reused.cached,true);assert.equal(strictCalls,3);
+ // Generated estimates based on the wrong coordinates need refreshing. Manual choices remain untouched.
+ const finance=new FinanceService(repo,null,strictRoutes,{geocoder:strictGeo});const saved=repo.saveProposal({...q,address:client});
+ const a={...assumptions,originAddressSnapshot:office};
+ await finance.record(saved.id,saved,a,{...defaultEstimateInput(),distanceMode:'automatic'},badRoute);assert.equal(finance.view(saved.id).routeNeedsRefresh,true);
+ await finance.record(saved.id,saved,a,{...defaultEstimateInput(),distanceMode:'manual',manualDistanceMeters:41000},null);
+ const manualBefore=JSON.stringify(finance.latest(saved.id));assert.equal(finance.view(saved.id).routeNeedsRefresh,false);await finance.refreshAutomatically(saved.id);assert.equal(JSON.stringify(finance.latest(saved.id)),manualBefore);assert.equal(strictCalls,3);
+ console.log('PASS: homônimo em outro estado/cidade/CEP rejeitado, cache incorreto invalidado, rota corrigida e distância manual preservada.');
  console.log('PASS: HeiGIT Pelias/openrouteservice, ordem longitude-latitude, cache, recálculo, quotas, erros e ida/volta.');
 }finally{repo.close();fs.rmSync(dir,{recursive:true,force:true});}

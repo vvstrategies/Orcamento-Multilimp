@@ -27,7 +27,7 @@ export class FinanceService{
   const q=this.repo.requireProposal(id),[latest,previous]=this.versions(id),editable=this.editable(id);
   const addressChanged=!!latest&&addressKey(latest.destinationAddressSnapshot)!==addressKey(q.address);
   const stale=!!latest&&latest.quoteKey!==financialQuoteKey(q),routes=this.routeCache.status();
-  const routeNeedsRefresh=!!latest&&latest.inputs?.considerTravel&&latest.inputs?.distanceMode==='automatic'&&(!latest.routeSnapshot||isUnexpectedZeroRoute(latest.assumptions?.originAddressSnapshot,latest.destinationAddressSnapshot,latest.routeSnapshot));
+  const routeNeedsRefresh=!!latest&&latest.inputs?.considerTravel&&latest.inputs?.distanceMode==='automatic'&&(!this.routeCache.isCurrent(latest.routeSnapshot)||isUnexpectedZeroRoute(latest.assumptions?.originAddressSnapshot,latest.destinationAddressSnapshot,latest.routeSnapshot));
   const automatic=this.automaticState(q);
   return {latest:latest||null,previous:previous||null,editable,stale,addressChanged,routeNeedsRefresh,automaticReady:automatic.ready,autoRouteIssue:automatic.reason,autoRouteError:this.autoErrors.get(id)||null,status:this.repo.operation(id).status,
    currentRevenue:quotedRevenue(q),defaults:this.settings(),currentOrigin:resolveOrigin(this.settings(),this.company()),
@@ -68,7 +68,7 @@ export class FinanceService{
  async refreshAutomatically(id,{alreadyLocked=false}={}){
   const run=async()=>{
    this.checkEditable(id);const q=this.repo.requireProposal(id),previous=this.latest(id),quoteKey=financialQuoteKey(q);
-   const routeNeedsRefresh=!!previous&&previous.inputs?.considerTravel&&previous.inputs?.distanceMode==='automatic'&&(!previous.routeSnapshot||isUnexpectedZeroRoute(previous.assumptions?.originAddressSnapshot,previous.destinationAddressSnapshot,previous.routeSnapshot));
+   const routeNeedsRefresh=!!previous&&previous.inputs?.considerTravel&&previous.inputs?.distanceMode==='automatic'&&(!this.routeCache.isCurrent(previous.routeSnapshot)||isUnexpectedZeroRoute(previous.assumptions?.originAddressSnapshot,previous.destinationAddressSnapshot,previous.routeSnapshot));
    if(previous?.quoteKey===quoteKey&&!routeNeedsRefresh){this.autoErrors.delete(id);return this.view(id);}
    const automatic=this.automaticState(q);
    if(!automatic.ready){this.autoErrors.set(id,automatic.reason);return this.view(id);}
@@ -100,7 +100,7 @@ export class FinanceService{
   if(inputs.considerTravel&&inputs.distanceMode==='automatic'){
    const row=this.repo.db.prepare('SELECT data FROM finance_routes WHERE id=?').get(inputs.routeId||'');
    route=row?JSON.parse(row.data):null;
-   const valid=route&&addressKey(route.origin)===addressKey(assumptions.originAddressSnapshot)&&addressKey(route.destination)===addressKey(q.address)&&!isUnexpectedZeroRoute(assumptions.originAddressSnapshot,q.address,route);
+   const valid=this.routeCache.isCurrent(route)&&addressKey(route.origin)===addressKey(assumptions.originAddressSnapshot)&&addressKey(route.destination)===addressKey(q.address)&&!isUnexpectedZeroRoute(assumptions.originAddressSnapshot,q.address,route);
    // Uma rota de versão anterior, sem registro ou com 0 km não pode travar o
    // atendimento. Recalcule-a aqui, inclusive quando a pessoa salva ajustes.
    if(!valid){
