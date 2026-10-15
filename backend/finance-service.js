@@ -23,13 +23,25 @@ export class FinanceService{
  latest(id){return this.versions(id)[0]||null;}
  editable(id){return this.repo.operation(id).status==='generated'&&!this.repo.job(id);}
  checkEditable(id){if(!this.editable(id))throw fail(409,'A estimativa está preservada para este atendimento. Só orçamentos em elaboração podem ser recalculados.');}
+ routeNeedsRefresh(q,estimate,{currentOrigin=true}={}){
+  if(!estimate?.inputs?.considerTravel||estimate.inputs.distanceMode!=='automatic')return false;
+  const origin=currentOrigin?resolveOrigin(this.settings(),this.company()):estimate.assumptions?.originAddressSnapshot;
+  const route=estimate.routeSnapshot;
+  return !route||addressKey(route.origin)!==addressKey(origin)||addressKey(route.destination)!==addressKey(q.address)||!this.routeCache.isCurrent(route)||isUnexpectedZeroRoute(origin,q.address,route);
+ }
+ canRepairScheduledRoute(id,q,estimate){return this.repo.operation(id).status==='scheduled'&&!this.repo.job(id)&&this.routeNeedsRefresh(q,estimate);}
+ refreshState(id){
+  const q=this.repo.requireProposal(id);
+  return hash(JSON.stringify([q.revision,q.versionId,this.latest(id),this.repo.operation(id),this.repo.job(id),this.settings(),this.company().location]));
+ }
  view(id){
   const q=this.repo.requireProposal(id),[latest,previous]=this.versions(id),editable=this.editable(id);
   const addressChanged=!!latest&&addressKey(latest.destinationAddressSnapshot)!==addressKey(q.address);
   const stale=!!latest&&latest.quoteKey!==financialQuoteKey(q),routes=this.routeCache.status();
-  const routeNeedsRefresh=!!latest&&latest.inputs?.considerTravel&&latest.inputs?.distanceMode==='automatic'&&(!this.routeCache.isCurrent(latest.routeSnapshot)||isUnexpectedZeroRoute(latest.assumptions?.originAddressSnapshot,latest.destinationAddressSnapshot,latest.routeSnapshot));
+  const routeNeedsRefresh=this.routeNeedsRefresh(q,latest,{currentOrigin:['generated','scheduled'].includes(this.repo.operation(id).status)});
+  const canRefreshAutomatically=editable||this.canRepairScheduledRoute(id,q,latest);
   const automatic=this.automaticState(q);
-  return {latest:latest||null,previous:previous||null,editable,stale,addressChanged,routeNeedsRefresh,automaticReady:automatic.ready,autoRouteIssue:automatic.reason,autoRouteError:this.autoErrors.get(id)||null,status:this.repo.operation(id).status,
+  return {latest:latest||null,previous:previous||null,editable,stale,addressChanged,routeNeedsRefresh,canRefreshAutomatically,automaticReady:automatic.ready,autoRouteIssue:automatic.reason,autoRouteError:this.autoErrors.get(id)||null,status:this.repo.operation(id).status,
    currentRevenue:quotedRevenue(q),defaults:this.settings(),currentOrigin:resolveOrigin(this.settings(),this.company()),
    routes};
  }
@@ -40,17 +52,19 @@ export class FinanceService{
   if(Number(body.expectedVersion)!==(this.latest(id)?.version||0))throw fail(409,'A estimativa mudou em outra aba. Feche e reabra o detalhe.');
   return q;
  }
- async record(id,q,assumptions,inputs,route){
+ async record(id,q,assumptions,inputs,route,correction=null){
   const previous=this.latest(id),result=calculateEstimate(q,assumptions,inputs,route),version=(previous?.version||0)+1,now=new Date().toISOString();
   const value={id:crypto.randomUUID(),proposalId:id,version,kind:'estimate',actual:null,quoteKey:financialQuoteKey(q),proposalRevision:q.revision,
-   destinationAddressSnapshot:q.address,assumptions,inputs,routeSnapshot:route,result,calculatedAt:now};
-  this.repo.db.prepare('INSERT INTO finance_estimates VALUES (?,?,?,?,?)').run(value.id,id,version,JSON.stringify(value),now);
-  if(q.versionId)this.repo.setVersionFinance(id,q.versionId,value);
+   destinationAddressSnapshot:q.address,assumptions,inputs,routeSnapshot:route,result,calculatedAt:now,...(correction?{correction}: {})};
+  this.repo.transaction(()=>{
+   this.repo.db.prepare('INSERT INTO finance_estimates VALUES (?,?,?,?,?)').run(value.id,id,version,JSON.stringify(value),now);
+   if(q.versionId)this.repo.setVersionFinance(id,q.versionId,value);
+  });
   return this.view(id);
  }
- automaticState(q){
-  const settings=this.settings(),configured=this.routeCache.status().configured,origin=resolveOrigin(settings,this.company()),rates=settings.serviceMaterialBps||{},vehicle=settings.vehicle||{};
-  const materialsReady=q.items.every(item=>Object.hasOwn(rates,item.service)?rates[item.service]!==null:settings.defaultMaterialBps!==null);
+ automaticState(q,settings=this.settings(),inputs=null){
+  const configured=this.routeCache.status().configured,origin=resolveOrigin(settings,this.company()),rates=settings.serviceMaterialBps||{},vehicle=settings.vehicle||{};
+  const materialsReady=inputs?.materialOverrideCents!=null||q.items.every(item=>Object.hasOwn(rates,item.service)?rates[item.service]!==null:settings.defaultMaterialBps!==null);
   const structuredAddressStarted=!!(q.postalCode||q.addressStreet||q.addressCity||q.addressState);
   const destinationReady=!!q.address&&(!structuredAddressStarted||!!(q.addressStreet&&q.addressCity));
   if(!configured)return {ready:false,reason:'As rotas automáticas não estão configuradas.'};
@@ -67,12 +81,16 @@ export class FinanceService{
  }
  async refreshAutomatically(id,{alreadyLocked=false}={}){
   const run=async()=>{
-   this.checkEditable(id);const q=this.repo.requireProposal(id),previous=this.latest(id),quoteKey=financialQuoteKey(q);
-   const routeNeedsRefresh=!!previous&&previous.inputs?.considerTravel&&previous.inputs?.distanceMode==='automatic'&&(!this.routeCache.isCurrent(previous.routeSnapshot)||isUnexpectedZeroRoute(previous.assumptions?.originAddressSnapshot,previous.destinationAddressSnapshot,previous.routeSnapshot));
+   const q=this.repo.requireProposal(id),previous=this.latest(id),quoteKey=financialQuoteKey(q);
+   const repairScheduled=this.canRepairScheduledRoute(id,q,previous);
+   if(!repairScheduled&&!this.editable(id))return this.view(id);
+   const routeNeedsRefresh=this.routeNeedsRefresh(q,previous);
    if(previous?.quoteKey===quoteKey&&!routeNeedsRefresh){this.autoErrors.delete(id);return this.view(id);}
-   const automatic=this.automaticState(q);
+   const state=this.refreshState(id),currentAssumptions=snapshotAssumptions(this.settings(),this.company());
+   // Repair an invalid route without replacing the agreed material/vehicle costs or manual extras.
+   const assumptions=repairScheduled?{...structuredClone(previous.assumptions),originMode:currentAssumptions.originMode,originAddress:currentAssumptions.originAddress,originAddressSnapshot:currentAssumptions.originAddressSnapshot}:currentAssumptions;
+   const automatic=this.automaticState(q,assumptions,previous?.inputs);
    if(!automatic.ready){this.autoErrors.set(id,automatic.reason);return this.view(id);}
-   const assumptions=snapshotAssumptions(this.settings(),this.company());
    const inputs=previous?structuredClone(previous.inputs):defaultEstimateInput();
    if(!inputs.considerTravel)return this.record(id,q,assumptions,validateEstimateInput(inputs),null);
    inputs.distanceMode='automatic';inputs.manualDistanceMeters=null;inputs.routeId=null;
@@ -82,10 +100,11 @@ export class FinanceService{
    // A consulta é assíncrona. Não grave uma estimativa para uma proposta que tenha
    // sido alterada, cancelada ou agendada enquanto a rota era calculada.
    const current=this.repo.requireProposal(id);
-   if(!this.editable(id)||financialQuoteKey(current)!==quoteKey)return this.view(id);
+   if(state!==this.refreshState(id)||(!this.editable(id)&&!this.canRepairScheduledRoute(id,current,this.latest(id))))return this.view(id);
    this.autoErrors.delete(id);
    inputs.routeId=route.id;
-   return this.record(id,current,assumptions,validateEstimateInput(inputs),route);
+   const correction=repairScheduled?{reason:'invalid_automatic_route',previousEstimateId:previous.id,previousEstimateVersion:previous.version,status:'scheduled'}:null;
+   return this.record(id,current,assumptions,validateEstimateInput(inputs),route,correction);
   };
   if(alreadyLocked)return run();
   // A estimativa financeira não usa Google Agenda. Ela nunca deve bloquear

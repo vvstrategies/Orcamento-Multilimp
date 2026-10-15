@@ -31,3 +31,14 @@ Agora os candidatos são filtrados por cidade/município, UF e CEP (quando retor
 O cache de coordenadas e de rotas passa pela mesma validação, inclusive em registros anteriores. Estimativas automáticas em elaboração com rota inválida são refeitas ao abrir; distâncias manuais permanecem preservadas e históricos de atendimentos agendados/concluídos não são recalculados silenciosamente. Se uma localização válida não for encontrada, o sistema informa a necessidade de revisão ou distância manual.
 
 Validação: testes de regressão para homônimos de outros estados e municípios, CEP incompatível, centro de município, cache antigo contaminado, reutilização da rota corrigida e preservação de distância manual; npm test e npm run check passaram. Consulta real confirmou a origem em Americana–SP e deslocamento de aproximadamente 40,94 km para Campinas, com a origem aproximada pelo trecho da rua.
+
+
+## Correção de estimativas agendadas — 15/10/2026
+
+O orçamento MLP-20261013-309D ainda exibia a estimativa de 13/10, com origem geocodificada em Joinville/SC. O cache da origem já estava corrigido para Americana/SP, mas a restrição de recálculo de atendimentos agendados mantinha a estimativa incorreta. A versão comercial atual também não tinha um snapshot financeiro próprio.
+
+A atualização automática agora corrige rotas inválidas de atendimentos agendados em uma nova versão financeira. Usa a origem selecionada nas configurações (empresa ou endereço personalizado) e a proposta atual, preservando as premissas de materiais/veículo e custos manuais. Registra o vínculo com a estimativa substituída e mantém o histórico, o agendamento e os PDFs. Alterações de origem também invalidam rotas automáticas de propostas em elaboração. Registros concluídos/cancelados, distâncias manuais e operações de agendamento em andamento permanecem preservados.
+
+A interface não apresenta distância, custo e margem de uma rota inválida como indicadores atuais: a estimativa antiga fica identificada em uma seção de histórico. Falhas do provedor continuam visíveis e permitem nova tentativa ao reabrir. Uma alteração concorrente de proposta, status, premissas ou estimativa impede a gravação do resultado pendente.
+
+Regressões cobertas: estimativa antiga em outra versão comercial, origem em outro estado, agendamento preservado, alteração de origem personalizada, custos manuais e premissas preservados, idempotência, falha de provedor, cancelamento e mudança de distância durante a consulta.

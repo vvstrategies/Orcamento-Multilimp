@@ -41,7 +41,7 @@ async function initSettings(){
  }catch(error){slot.innerHTML='<h2>Custos dos atendimentos</h2><p class="hint">'+esc(error.message)+'</p>';}
 }
 function metrics(view){
- const r=view.latest?.result,invalid=view.stale&&view.editable,display=invalid?null:r;
+ const r=view.latest?.result,invalid=view.routeNeedsRefresh||(view.stale&&view.editable),display=invalid?null:r;
  const labels={generated:'Receita orçada · base PIX',scheduled:'Receita contratada · base PIX',completed:'Receita operacional · base PIX',cancelled:'Valor orçado · cancelado'};
  return '<div class="finance-metrics">'+[
   [labels[view.status]||'Receita estimada · base PIX',money(invalid?view.currentRevenue:r?.revenue??view.currentRevenue)],
@@ -73,7 +73,7 @@ async function mount(slot,q,{demo=false}={}){
  if(demo){slot.innerHTML='<h3>Rentabilidade estimada</h3><p class="hint">Este card é fictício. Em Configurações, use “Ver demonstração” para explorar o cálculo completo.</p>';return;}
  try{
   let view=await EcoAuth.api('/api/proposals/'+encodeURIComponent(q.id)+'/finance');
-  if(view.editable&&(!view.latest||view.stale||view.routeNeedsRefresh)){slot.innerHTML='<h3>Rentabilidade estimada <span class="finance-private">Uso interno</span></h3><p class="hint">Calculando automaticamente com as premissas, rota e valores atuais...</p>';view=await EcoAuth.api('/api/proposals/'+encodeURIComponent(q.id)+'/finance/refresh',{method:'POST'});}
+  if(view.canRefreshAutomatically&&(!view.latest||view.stale||view.routeNeedsRefresh)){slot.innerHTML='<h3>Rentabilidade estimada <span class="finance-private">Uso interno</span></h3><p class="hint">Calculando automaticamente com as premissas, rota e valores atuais...</p>';view=await EcoAuth.api('/api/proposals/'+encodeURIComponent(q.id)+'/finance/refresh',{method:'POST'});}
   if(slot.isConnected)render(slot,q,view);
  }catch(error){if(slot.isConnected)slot.innerHTML='<h3>Rentabilidade estimada</h3><p class="hint">'+esc(error.message)+'</p>';}
 }
@@ -81,15 +81,16 @@ function render(slot,q,view){
  const e=view.latest,r=e?.result;
  slot.innerHTML=`<div class="finance-heading"><h3>Rentabilidade estimada</h3><span class="finance-private">Uso interno</span></div><p class="hint">Custos diretos e margem deste atendimento. Estas informações não entram no PDF.</p>
  ${view.stale?`<p class="finance-alert">${view.addressChanged?'O endereço do atendimento mudou.':'Os itens ou valores do orçamento mudaram.'} ${view.editable?'A atualização automática será tentada ao abrir este detalhe; se a rota estiver indisponível, use os ajustes abaixo.':'A estimativa histórica abaixo foi preservada.'}</p>`:''}
- ${view.routeNeedsRefresh?`<p class="finance-alert">A localização usada na rota precisa ser validada para os endereços atuais. ${view.editable?'O sistema tentará recalcular o deslocamento automaticamente.':'Esta é uma estimativa histórica preservada; a distância não deve ser usada como referência sem revisão.'}</p>`:''}
+ ${view.routeNeedsRefresh?`<p class="finance-alert">A localização usada na rota precisa ser validada para os endereços atuais. ${view.canRefreshAutomatically?'O sistema tentará recalcular o deslocamento automaticamente.':'Esta é uma estimativa histórica preservada; a distância não deve ser usada como referência sem revisão.'}</p>`:''}
  ${view.autoRouteError?`<p class="finance-alert">A rota automática não foi concluída: ${esc(view.autoRouteError)}. Revise a origem e o endereço; a próxima atualização tentará novamente.</p>`:view.routeNeedsRefresh&&view.autoRouteIssue?`<p class="finance-alert">A rota não pôde ser refeita automaticamente: ${esc(view.autoRouteIssue)}</p>`:''}
  ${metrics(view)}
  ${e?`<p class="finance-caption">Estimativa v${e.version} · ${when(e.calculatedAt)}${view.editable?'':' · Histórico preservado'}</p>
- ${!view.stale||!view.editable?distance(e):''}
+ ${!view.routeNeedsRefresh&&(!view.stale||!view.editable)?distance(e):''}
  ${r.warnings.length?`<p class="finance-alert">${r.warnings.map(esc).join('<br>')}</p>`:''}
- ${view.stale&&view.editable?`<details><summary>Ver estimativa anterior, desatualizada</summary>${distance(e)}${composition(e)}</details>`:composition(e)}`:'<p class="hint">Ainda não há estimativa salva. Confira as premissas e informe o deslocamento.</p>'}
+ ${view.routeNeedsRefresh||(view.stale&&view.editable)?`<details><summary>Ver estimativa anterior, desatualizada</summary>${distance(e)}${composition(e)}</details>`:composition(e)}`:'<p class="hint">Ainda não há estimativa salva. Confira as premissas e informe o deslocamento.</p>'}
+ ${e?.correction?'<p class="hint">Rota corrigida automaticamente. A estimativa anterior foi mantida no histórico.</p>':''}
  ${view.previous?`<details class="finance-history"><summary>Versão anterior · ${when(view.previous.calculatedAt)}</summary><p class="hint">v${view.previous.version} · receita ${money(view.previous.result.revenue)} · custo ${money(view.previous.result.totalDirectCost)} · margem ${money(view.previous.result.contributionMargin)}</p>${composition(view.previous)}</details>`:''}
- ${!view.editable?'<p class="finance-note">Estimativas de atendimentos agendados, concluídos ou cancelados ficam preservadas. O recálculo está disponível apenas enquanto o orçamento estiver em elaboração.</p>':'<div class="finance-edit-slot"></div>'}`;
+ ${!view.editable?'<p class="finance-note">As premissas dos atendimentos agendados ficam preservadas; rotas automáticas inválidas são corrigidas com uma nova versão. Concluídos e cancelados mantêm seu histórico.</p>':'<div class="finance-edit-slot"></div>'}`;
  if(view.editable)editor($('.finance-edit-slot',slot),slot,q,view);
 }
 function editor(target,slot,q,view){

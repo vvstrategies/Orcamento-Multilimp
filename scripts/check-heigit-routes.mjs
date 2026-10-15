@@ -88,6 +88,44 @@ try{
  await finance.record(saved.id,saved,a,{...defaultEstimateInput(),distanceMode:'automatic'},badRoute);assert.equal(finance.view(saved.id).routeNeedsRefresh,true);
  await finance.record(saved.id,saved,a,{...defaultEstimateInput(),distanceMode:'manual',manualDistanceMeters:41000},null);
  const manualBefore=JSON.stringify(finance.latest(saved.id));assert.equal(finance.view(saved.id).routeNeedsRefresh,false);await finance.refreshAutomatically(saved.id);assert.equal(JSON.stringify(finance.latest(saved.id)),manualBefore);assert.equal(strictCalls,3);
+ // Regression: the current commercial version has no finance snapshot and an older
+ // scheduled estimate still holds the wrong SC origin, even after the geocode cache was fixed.
+ repo.setConfig('settings',{...company,company:{...company.company,location:office}});
+ finance.saveSettings({...a,originMode:'company',originAddress:''});
+ const scheduledQuote=modelo.quote({...company,terms:fees});scheduledQuote.client='Rota antiga agendada';scheduledQuote.address=client;scheduledQuote.items=[{...modelo.item('Sofá'),quantity:1,price:300}];
+ const initial=repo.saveProposal(scheduledQuote),extras={...defaultEstimateInput(),distanceMode:'automatic',materialOverrideCents:2400,tollCents:850,parkingCents:500,otherDirectCosts:[{description:'Ajudante',amountCents:5000}]};
+ await finance.record(initial.id,initial,a,extras,badRoute);const frozen=finance.latest(initial.id),frozenJson=JSON.stringify(frozen);
+ const revised=repo.saveProposal({...initial,items:[{...initial.items[0],quantity:2}]});assert.equal(repo.currentVersion(initial.id).financialSnapshot,null);
+ const operation=repo.setOperation({id:initial.id,status:'scheduled',schedule:{start:'2026-10-15T11:30:00Z',eventId:'keep-calendar-event'}}),operationJson=JSON.stringify(operation);
+ // A route repair must not silently adopt later vehicle/material settings.
+ finance.saveSettings({...finance.settings(),defaultMaterialBps:4000,vehicle:{...a.vehicle,fuelPriceCents:990}});
+ let scheduledView=finance.view(initial.id);assert.equal(scheduledView.editable,false);assert.equal(scheduledView.stale,true);assert.equal(scheduledView.routeNeedsRefresh,true);assert.equal(scheduledView.canRefreshAutomatically,true);
+ scheduledView=await finance.refreshAutomatically(initial.id);
+ assert.equal(scheduledView.latest.version,frozen.version+1);assert.equal(scheduledView.latest.proposalRevision,revised.revision);assert.equal(scheduledView.stale,false);assert.equal(scheduledView.routeNeedsRefresh,false);assert.equal(scheduledView.canRefreshAutomatically,false);
+ assert.equal(scheduledView.latest.result.distanceMeters,41000);assert.equal(scheduledView.latest.result.revenue,60000);assert.deepEqual(scheduledView.latest.assumptions.vehicle,frozen.assumptions.vehicle);assert.equal(scheduledView.latest.inputs.materialOverrideCents,2400);assert.equal(scheduledView.latest.inputs.tollCents,850);assert.deepEqual(scheduledView.latest.inputs.otherDirectCosts,extras.otherDirectCosts);
+ assert.equal(scheduledView.latest.correction.previousEstimateId,frozen.id);assert.equal(JSON.stringify(scheduledView.previous),frozenJson);assert.equal(repo.db.prepare('SELECT data FROM finance_estimates WHERE id=?').get(frozen.id).data,frozenJson);assert.equal(JSON.stringify(repo.operation(initial.id)),operationJson);assert.equal(repo.requireProposal(initial.id).revision,revised.revision);
+ assert.equal((await finance.refreshAutomatically(initial.id)).latest.id,scheduledView.latest.id);
+ // Completed/cancelled/manual records and scheduling in progress remain frozen.
+ for(const status of ['completed','cancelled','scheduled']){
+  repo.setOperation({...operation,status});await finance.record(initial.id,revised,a,extras,badRoute);
+  if(status==='scheduled')repo.setJob(initial.id,{intent:'reschedule'});
+  const before=JSON.stringify(finance.latest(initial.id));assert.equal(finance.view(initial.id).canRefreshAutomatically,false);await finance.refreshAutomatically(initial.id);assert.equal(JSON.stringify(finance.latest(initial.id)),before);
+ }
+ repo.db.prepare('DELETE FROM sync_jobs WHERE proposal_id=?').run(initial.id);
+ await finance.record(initial.id,revised,a,{...extras,distanceMode:'manual',manualDistanceMeters:9000},null);
+ const manualScheduled=JSON.stringify(finance.latest(initial.id));await finance.refreshAutomatically(initial.id);assert.equal(JSON.stringify(finance.latest(initial.id)),manualScheduled);
+ // Cancellation or another estimate while the external route is pending must win.
+ await finance.record(initial.id,revised,a,extras,badRoute);repo.db.prepare('DELETE FROM finance_routes').run();
+ let releaseRoute;strictRoutes.route=async()=>new Promise(resolve=>{releaseRoute=()=>resolve({distanceMeters:41000,durationSeconds:3000});});
+ const pending=finance.refreshAutomatically(initial.id);for(let i=0;i<30&&!releaseRoute;i++)await new Promise(resolve=>setTimeout(resolve,0));assert.equal(typeof releaseRoute,'function');
+ const beforeCancel=JSON.stringify(finance.latest(initial.id));repo.setOperation({...operation,status:'cancelled'});releaseRoute();await pending;assert.equal(JSON.stringify(finance.latest(initial.id)),beforeCancel);
+ repo.setOperation(operation);repo.db.prepare('DELETE FROM finance_routes').run();releaseRoute=null;
+ const concurrent=finance.refreshAutomatically(initial.id);for(let i=0;i<30&&!releaseRoute;i++)await new Promise(resolve=>setTimeout(resolve,0));assert.equal(typeof releaseRoute,'function');
+ await finance.record(initial.id,revised,a,{...extras,distanceMode:'manual',manualDistanceMeters:7000},null);const manualDuring=JSON.stringify(finance.latest(initial.id));releaseRoute();await concurrent;assert.equal(JSON.stringify(finance.latest(initial.id)),manualDuring);
+ // Provider failures leave the old evidence intact and keep the route marked invalid.
+ await finance.record(initial.id,revised,a,extras,badRoute);repo.db.prepare('DELETE FROM finance_routes').run();strictRoutes.route=async()=>{throw Error('route unavailable');};
+ const failedBefore=JSON.stringify(finance.latest(initial.id)),failedView=await finance.refreshAutomatically(initial.id);assert.equal(failedView.routeNeedsRefresh,true);assert.equal(failedView.autoRouteError,'route unavailable');assert.equal(JSON.stringify(finance.latest(initial.id)),failedBefore);
+ console.log('PASS: rota inválida de agendado corrigida em nova versão; histórico, premissas e custos manuais preservados; falhas e concorrência não sobrescrevem dados.');
  console.log('PASS: homônimo em outro estado/cidade/CEP rejeitado, cache incorreto invalidado, rota corrigida e distância manual preservada.');
  console.log('PASS: HeiGIT Pelias/openrouteservice, ordem longitude-latitude, cache, recálculo, quotas, erros e ida/volta.');
 }finally{repo.close();fs.rmSync(dir,{recursive:true,force:true});}

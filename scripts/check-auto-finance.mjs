@@ -40,5 +40,10 @@ try{
  const cancellable=modelo.quote({...companySettings,terms:fees});cancellable.client='Cancelar durante rota';cancellable.address='Rua de teste lenta, 100, São Paulo - SP';cancellable.items=[{...modelo.item('Sofá'),quantity:1,price:200}];const savedCancellable=system.repo.saveProposal(cancellable);
  slowRoute=true;const background=system.finance.refreshAutomatically(savedCancellable.id);for(let i=0;i<20&&!releaseSlowRoute;i++)await new Promise(resolve=>setTimeout(resolve,0));assert.equal(typeof releaseSlowRoute,'function');assert.equal(system.service.locks.has(savedCancellable.id),false);
  const cancelled=await system.service.status(savedCancellable.id,'cancelled');assert.equal(cancelled.status,'cancelled');releaseSlowRoute();const afterCancellation=await background;assert.equal(afterCancellation.status,'cancelled');assert.equal(afterCancellation.latest,null);slowRoute=false;
+ // A changed company/custom origin must invalidate an automatic route even if the quote did not change.
+ await data('/api/financial-settings',{...financial,originMode:'custom',originAddress:'Rua Nova Base, 300, São Paulo - SP'},'PUT');
+ view=await data('/api/proposals/'+noNumber.id+'/finance');assert.equal(view.routeNeedsRefresh,true);
+ view=await data('/api/proposals/'+noNumber.id+'/finance/refresh',{});assert.equal(view.routeNeedsRefresh,false);assert.equal(view.latest.routeSnapshot.origin,'Rua Nova Base, 300, São Paulo - SP');
+ assert.equal(view.latest.assumptions.originMode,'custom');assert.equal(view.latest.assumptions.originAddressSnapshot,'Rua Nova Base, 300, São Paulo - SP');
  console.log('PASS: orçamento salvo e revisado atualiza PDF, rota, custos e rentabilidade automaticamente, preservando versões anteriores e sem bloquear cancelamento durante uma rota.');
 }finally{await new Promise(resolve=>server.close(resolve));system.repo.close();fs.rmSync(dir,{recursive:true,force:true});}
