@@ -42,3 +42,5 @@ A atualização automática agora corrige rotas inválidas de atendimentos agend
 A interface não apresenta distância, custo e margem de uma rota inválida como indicadores atuais: a estimativa antiga fica identificada em uma seção de histórico. Falhas do provedor continuam visíveis e permitem nova tentativa ao reabrir. Uma alteração concorrente de proposta, status, premissas ou estimativa impede a gravação do resultado pendente.
 
 Regressões cobertas: estimativa antiga em outra versão comercial, origem em outro estado, agendamento preservado, alteração de origem personalizada, custos manuais e premissas preservados, idempotência, falha de provedor, cancelamento e mudança de distância durante a consulta.
+
+Validação: npm test e npm run check passaram. Consulta real retornou 5.462 metros de ida a partir de Americana. A abertura do orçamento após o deploy criou a estimativa v2 automaticamente, baseada na receita atual de R$ 490,00. O quadro de rentabilidade do atendimento aguarda esse recálculo para carregar a mesma estimativa.
