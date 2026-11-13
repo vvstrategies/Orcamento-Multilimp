@@ -63,10 +63,13 @@ export class CommercialService{
       CREATE TABLE IF NOT EXISTS partners (id TEXT PRIMARY KEY,data TEXT NOT NULL,position INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS profit_distributions (id TEXT PRIMARY KEY,period_from TEXT NOT NULL,period_to TEXT NOT NULL,data TEXT NOT NULL,created_at TEXT NOT NULL);`);
   }
+  // Orçamento sem tag própria herda o tipo marcado na ficha do cliente (orçamentos antigos, de antes das tags,
+  // ou cujo tipo foi definido só no cadastro). Assim "Sem tag" só sobra quando nem o cliente tem tipo.
   quotes(where='',...params){
+    let clientTags=null;const inherited=id=>{if(!id)return [];clientTags??=new Map(this.repo.db.prepare('SELECT id,data FROM clients').all().map(c=>{try{const t=JSON.parse(c.data).tags;return [c.id,Array.isArray(t)?t:[]]}catch{return [c.id,[]]}}));return clientTags.get(id)||[]};
     return this.repo.db.prepare(QUOTES+where).all(...params).map(r=>{
-      const items=JSON.parse(r.items),op=r.op?JSON.parse(r.op):{id:r.id,status:'generated',schedule:null};
-      return {id:r.id,number:r.number||'',date:r.date||'',client:r.client||'',origin:r.origin||'',tags:r.tags?JSON.parse(r.tags):[],address:r.address||'',addressNeighborhood:r.addressNeighborhood||'',addressCity:r.addressCity||'',addressState:r.addressState||'',
+      const items=JSON.parse(r.items),op=r.op?JSON.parse(r.op):{id:r.id,status:'generated',schedule:null},own=r.tags?JSON.parse(r.tags):[];
+      return {id:r.id,number:r.number||'',date:r.date||'',client:r.client||'',origin:r.origin||'',tags:Array.isArray(own)&&own.length?own:inherited(r.clientId),address:r.address||'',addressNeighborhood:r.addressNeighborhood||'',addressCity:r.addressCity||'',addressState:r.addressState||'',
         items,op,clientId:r.clientId,pix:items.reduce((s,i)=>s+itemCents(i),0),start:day(op.schedule?.start),completedAt:op.status==='completed'?day(op.serviceCompletedAt||op.schedule?.end):null};
     });
   }
@@ -98,13 +101,13 @@ export class CommercialService{
   writeClient(id,data,created){const t=now();this.repo.db.prepare('INSERT INTO clients VALUES (?,?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data,updated_at=excluded.updated_at').run(id,JSON.stringify(data),created||t,t);return this.client(id)}
   // Só telefone ou e-mail identificam o mesmo cliente; nome igual é apenas sugestão.
   match(q){
-    const phone=phoneOf(q.clientContact),email=emailOf(q.clientContact),rows=this.clientRows();
+    const phone=phoneOf(q.clientContact),email=emailOf(q.clientEmail)||emailOf(q.clientContact),rows=this.clientRows();
     return (phone&&rows.find(c=>phoneOf(c.phone)===phone))||(email&&rows.find(c=>c.email&&c.email.toLowerCase()===email))||null;
   }
   sameName(name,exceptId){const key=norm(name);return key?this.clientRows().filter(c=>c.id!==exceptId&&norm(c.name)===key).map(c=>({id:c.id,name:c.name})):[]}
   // O orçamento só preenche campos vazios: o que foi editado no cadastro do cliente prevalece.
   clientFromQuote(q,base={}){
-    const phone=base.phone||(phoneOf(q.clientContact)?q.clientContact:''),email=base.email||emailOf(q.clientContact);
+    const phone=base.phone||(phoneOf(q.clientContact)?q.clientContact:''),email=base.email||emailOf(q.clientEmail)||emailOf(q.clientContact);
     const tags=[...new Set([...(base.tags||[]),...(Array.isArray(q.tags)?q.tags:[])])].slice(0,10);
     return {name:base.name||q.client.trim(),phone,email,contactName:base.contactName||'',address:base.address||q.address||'',city:base.city||placeOf(q).city,neighborhood:base.neighborhood||q.addressNeighborhood||'',
       birthday:base.birthday||quoteBirthday(q.clientBirthday),notes:base.notes||'',custom:base.custom||[],tags,origin:base.origin||q.origin||'',...(base.avatar?{avatar:base.avatar}:{})};
@@ -167,6 +170,27 @@ export class CommercialService{
     return {name,phone:text(raw.phone??old.phone,60),email,contactName:text(raw.contactName??old.contactName,240),address:text(raw.address??old.address,800),city:text(raw.city??old.city,160),neighborhood:text(raw.neighborhood??old.neighborhood,160),birthday:birthday(raw.birthday??old.birthday),notes:text(raw.notes??old.notes,3000),custom:this.customFields(raw.custom,old.custom),tags,origin,...(old.avatar?{avatar:old.avatar}:{})};
   }
   createClient(raw){const id=crypto.randomUUID();return this.writeClient(id,this.clientInput(raw))}
+  // Importação em lote (Google Contatos, .vcf ou .csv). Telefone ou e-mail já cadastrado: só completa os campos vazios.
+  importClients(raw){
+    const list=raw?.clients;if(!Array.isArray(list)||!list.length||list.length>500)throw fail(400,'Envie de 1 a 500 clientes por vez.');
+    const byPhone=new Map(),byEmail=new Map(),index=c=>{const p=phoneOf(c.phone);if(p)byPhone.set(p,c);if(c.email)byEmail.set(c.email.toLowerCase(),c)};
+    for(const c of this.clientRows())index(c);
+    const FILL=['phone','email','contactName','address','city','neighborhood','birthday','notes','origin'];
+    let created=0,updated=0,skipped=0;const errors=[];
+    this.repo.transaction(()=>{for(const item of list){try{
+      if(!item||typeof item!=='object')throw fail(400,'Cliente inválido.');
+      // Tag desconhecida não impede importar o contato: entra sem ela.
+      let input;try{input=this.clientInput(item)}catch(error){if(!Array.isArray(item.tags)||!item.tags.length)throw error;input=this.clientInput({...item,tags:[]})}
+      const p=phoneOf(input.phone),e=input.email.toLowerCase(),old=(p&&byPhone.get(p))||(e&&byEmail.get(e));
+      if(!old){const c=this.writeClient(crypto.randomUUID(),input);index(c);created++;continue}
+      const next={...old};let changed=false;
+      for(const k of FILL)if(!old[k]&&input[k]){next[k]=input[k];changed=true}
+      const tags=[...new Set([...(old.tags||[]),...input.tags])].slice(0,10);if(tags.length!==(old.tags||[]).length){next.tags=tags;changed=true}
+      if(!changed){skipped++;continue}
+      index(this.writeClient(old.id,this.clientInput(next,old),old.createdAt));updated++;
+    }catch(error){errors.push({name:String(item?.name||'').slice(0,80),message:error.message})}}});
+    return {created,updated,skipped,failed:errors.length,errors:errors.slice(0,20)};
+  }
   updateClient(id,raw){const old=this.client(id);if(!old)throw fail(404,'Cliente não encontrado.');return this.writeClient(id,this.clientInput(raw,old),old.createdAt)}
   history(list){return list.map(x=>({id:x.id,number:x.number,date:x.date,status:x.op.status,serviceDate:x.op.status==='completed'?x.completedAt:x.start,pixCents:x.pix,services:x.items.map(i=>i.service)})).sort((a,b)=>b.date.localeCompare(a.date))}
   // Último serviço = atendimento concluído; próximo = agendamento a partir de hoje.
@@ -174,7 +198,7 @@ export class CommercialService{
     const today=localDate(),done=list.filter(x=>x.completedAt),dates=list.map(x=>x.date).filter(Boolean).sort();
     const lastServiceDate=done.map(x=>x.completedAt).sort().at(-1)||null,nextServiceDate=list.filter(x=>x.op.status==='scheduled'&&x.start>=today).map(x=>x.start).sort()[0]||null;
     return {...c,proposalIds:this.history(list).map(x=>x.id),quoteCount:list.length,closedCount:done.length,closedCents:total(done),
-      lastServiceDate,nextServiceDate,lastService:lastServiceDate?{date:lastServiceDate,status:'completed'}:null,nextService:nextServiceDate?{date:nextServiceDate,status:'scheduled'}:null,firstDate:dates[0]||null};
+      lastServiceDate,nextServiceDate,facets:list.map(x=>({date:x.date,origin:x.origin,services:[...new Set(x.items.map(i=>i.service).filter(Boolean))],status:x.op.status||'generated',tags:x.tags,completedAt:x.completedAt||null,pixCents:x.pix})),lastService:lastServiceDate?{date:lastServiceDate,status:'completed'}:null,nextService:nextServiceDate?{date:nextServiceDate,status:'scheduled'}:null,firstDate:dates[0]||null};
   }
   clients(){
     const groups=new Map();for(const q of this.quotes(' AND l.client_id IS NOT NULL')){if(!groups.has(q.clientId))groups.set(q.clientId,[]);groups.get(q.clientId).push(q)}
@@ -212,26 +236,76 @@ export class CommercialService{
       closed:done.length,revenueCents:revenue,ticketCents:done.length?Math.round(revenue/done.length):null,
       campaign:campaignMetrics({spendCents:spend,quotes:cohort.length,closed:done.length,revenueCents:revenue,paidRevenueCents:paidRevenue})};
   }
-  dashboard({from,to,channel='all'}={}){
+  // Filtros combináveis da barra do topo: origem (qualquer uma), serviços e tags (tipo de cliente). Vazio = todos.
+  static filterRows(rows,{origin='all',services=[],tags=[]}={}){
+    return rows.filter(r=>(origin==='all'||(origin==='none'?!r.origin:r.origin===origin))&&(!services.length||r.items.some(i=>services.includes(i.service)))&&(!tags.length||(tags.includes('__none')&&!(r.tags||[]).length)||(r.tags||[]).some(t=>tags.includes(t))));
+  }
+  dashboard({from,to,channel='all',origin,services:serviceFilter=[],tags=[]}={}){
+    origin=origin||channel||'all';channel=has(CHANNEL_PROVIDER,origin)?origin:'all';
+    if(origin!=='all'&&origin!=='none'&&!has(ORIGINS,origin))throw fail(400,'Canal inválido.');
+    const list=v=>(Array.isArray(v)?v:String(v||'').split(',')).map(x=>String(x).trim()).filter(Boolean).slice(0,40);serviceFilter=list(serviceFilter);tags=list(tags);
     from=date(from,false);to=date(to,false);if(from>to)throw fail(400,'A data inicial deve ser anterior à final.');
     if(spanDays(from,to)>731)throw fail(400,'Escolha um período de até 2 anos.');
-    if(channel!=='all'&&!has(CHANNEL_PROVIDER,channel))throw fail(400,'Canal inválido.');
     const days=spanDays(from,to),prevTo=addDays(from,-1),prevFrom=addDays(from,-days);
-    const all=this.quotes(),rows=channel==='all'?all:all.filter(r=>r.origin===channel),spendNow=this.spendTotals(from,to),spendPrev=this.spendTotals(prevFrom,prevTo);
-    const current=this.period(rows,from,to,this.spendFor(spendNow,channel),channel),previous=this.period(rows,prevFrom,prevTo,this.spendFor(spendPrev,channel),channel);
+    const all=this.quotes(),rows=CommercialService.filterRows(all,{origin,services:serviceFilter,tags}),spendNow=this.spendTotals(from,to),spendPrev=this.spendTotals(prevFrom,prevTo);
+    const unpaid=origin!=='all'&&channel==='all',spendOf=t=>unpaid?0:this.spendFor(t,channel);
+    const current=this.period(rows,from,to,spendOf(spendNow),channel),previous=this.period(rows,prevFrom,prevTo,spendOf(spendPrev),channel);
     const byDay=new Map();for(const r of rows)if(r.completedAt)byDay.set(r.completedAt,(byDay.get(r.completedAt)||0)+r.pix);
     const series=f=>{let acc=0;return Array.from({length:days},(_,i)=>acc+=byDay.get(addDays(f,i))||0)};
-    const services=new Map();for(const r of rows)if(between(r.completedAt,from,to))for(const it of r.items){const s=services.get(it.service)||{service:it.service,revenueCents:0,count:0};s.revenueCents+=itemCents(it);s.count+=1;services.set(it.service,s)}
+    const services=new Map();for(const r of rows)if(between(r.completedAt,from,to))for(const it of r.items){if(serviceFilter.length&&!serviceFilter.includes(it.service))continue;const s=services.get(it.service)||{service:it.service,revenueCents:0,count:0};s.revenueCents+=itemCents(it);s.count+=1;services.set(it.service,s)}
     const today=localDate(),week=addDays(today,7),scheduled=rows.filter(r=>r.op.status==='scheduled'&&r.start>=today);
     const upcoming=scheduled.filter(r=>r.start<=week).sort((a,b)=>a.op.schedule.start.localeCompare(b.op.schedule.start)).slice(0,8)
       .map(r=>({id:r.id,client:r.client,start:r.op.schedule.start,end:r.op.schedule.end,services:r.items.map(i=>`${i.service}${i.quantity>1||i.unit==='m²'?' ('+Number(i.quantity).toLocaleString('pt-BR')+(i.unit==='m²'?' m²':'')+')':''}`),place:r.addressNeighborhood||placeOf(r).city,pixCents:r.pix,tags:r.tags}));
     // A receber: agendados a partir de hoje, independentemente de quando o orçamento foi criado.
-    const toReceiveCents=total(scheduled);
-    const channels=[...Object.keys(ORIGINS),''].map(origin=>{const paid=has(CHANNEL_PROVIDER,origin),p=this.period(all.filter(r=>r.origin===origin),from,to,paid?this.spendFor(spendNow,origin):0,origin);return {origin,label:has(ORIGINS,origin)?ORIGINS[origin]:'Sem origem',paid,...p.campaign}}).filter(c=>c.paid||c.quotes||c.closed);
-    return {from,to,channel,previous:{from:prevFrom,to:prevTo,...previous},current,
+    // Agendados com horário vencido ficam fora do valor (aguardam ser marcados como concluídos), mas são contados à parte.
+    const toReceiveCents=total(scheduled),toReceiveCount=scheduled.length,overdueCount=rows.filter(r=>r.op.status==='scheduled'&&!(r.start>=today)).length;
+    const scoped=CommercialService.filterRows(all,{services:serviceFilter,tags}),channels=[...Object.keys(ORIGINS),''].map(origin=>{const paid=has(CHANNEL_PROVIDER,origin),p=this.period(scoped.filter(r=>r.origin===origin),from,to,paid?this.spendFor(spendNow,origin):0,origin);return {origin,label:has(ORIGINS,origin)?ORIGINS[origin]:'Sem origem',paid,...p.campaign}}).filter(c=>c.paid||c.quotes||c.closed);
+    // Custo por tag segue a origem escolhida na barra: só orçamentos daquela origem e, se paga, só as campanhas da plataforma.
+    const byTag=this.tagBreakdown(CommercialService.filterRows(all,{origin}),from,to,origin==='all'?null:(CHANNEL_PROVIDER[origin]||''));
+    return {from,to,channel,origin,filters:{origin,services:serviceFilter,tags},spendScope:serviceFilter.length||tags.length?'platform':'filtered',previous:{from:prevFrom,to:prevTo,...previous},current,byTag,
       series:{current:series(from),previous:series(prevFrom)},
       services:[...services.values()].sort((a,b)=>b.revenueCents-a.revenueCents),
-      upcoming,toReceiveCents,forecastCents:toReceiveCents,spend:{totalCents:this.spendFor(spendNow,'all'),providers:spendNow,connected:this.connectedProviders()},channels};
+      upcoming,toReceiveCents,toReceiveCount,overdueCount,forecastCents:toReceiveCents,spend:{totalCents:this.spendFor(spendNow,'all'),providers:spendNow,connected:this.connectedProviders()},channels};
+  }
+  /* ---------- Custo por tag ---------- */
+  // Mesma metodologia do painel (campaignMetrics): coorte de orçamentos criados no período e fechamentos concluídos no período.
+  // O gasto de mídia só existe por campanha (ad_spend_daily), nunca por orçamento. Por isso uma tag só recebe investimento
+  // quando o usuário declara que uma campanha é daquela tag; sem isso o custo fica "não atribuível" (nada é rateado).
+  // Denominador do custo atribuído: orçamentos/fechamentos da tag vindos de origem paga (Google/Meta Ads), como em "por canal".
+  campaignTagMap(){return this.repo.config('campaign-tag-map')||{}}
+  saveCampaignTags(raw){
+    if(!raw||typeof raw!=='object'||Array.isArray(raw))throw fail(400,'Mapa de campanhas inválido.');
+    const known=new Set(this.tags().map(t=>t.id)),map={...this.campaignTagMap()};let n=0;
+    for(const [key,tag] of Object.entries(raw)){
+      if(++n>500||!/^(google-ads|meta-ads):\d{1,40}$/.test(key))throw fail(400,'Campanha inválida.');
+      if(tag===''||tag==null){delete map[key];continue}
+      if(typeof tag!=='string'||!known.has(tag))throw fail(400,'Tag inválida para a campanha.');
+      map[key]=tag;
+    }
+    this.repo.setConfig('campaign-tag-map',map);return map;
+  }
+  campaignSpend(from,to){
+    if(!this.repo.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='ad_spend_daily'").get())return [];
+    return this.repo.db.prepare("SELECT provider,campaign_id campaignId,MAX(json_extract(data,'$.campaignName')) campaignName,SUM(spend_cents) cents FROM ad_spend_daily WHERE day>=? AND day<=? AND currency='BRL' GROUP BY provider,campaign_id ORDER BY cents DESC").all(from,to).map(r=>({provider:r.provider,campaignId:r.campaignId,campaignName:r.campaignName||r.campaignId,spendCents:Number(r.cents)||0}));
+  }
+  // provider: null = todas as plataformas; '' = origem sem mídia paga (nenhuma campanha); 'google-ads'/'meta-ads' = só ela.
+  tagBreakdown(all,from,to,provider=null){
+    const map=this.campaignTagMap(),campaigns=this.campaignSpend(from,to).filter(c=>provider==null||c.provider===provider).map(c=>({...c,tag:map[c.provider+':'+c.campaignId]||''}));
+    const spendBy=new Map();for(const c of campaigns)if(c.tag)spendBy.set(c.tag,(spendBy.get(c.tag)||0)+c.spendCents);
+    const paid=r=>has(CHANNEL_PROVIDER,r.origin),hasTag=(r,id)=>id===''?!(r.tags||[]).length:(r.tags||[]).includes(id);
+    const cohort=all.filter(r=>between(r.date,from,to)),done=all.filter(r=>between(r.completedAt,from,to));
+    const rows=[...this.tags().map(t=>({id:t.id,label:t.label})),{id:'',label:'Sem tag'}].map(t=>{
+      const quotes=cohort.filter(r=>hasTag(r,t.id)),closes=done.filter(r=>hasTag(r,t.id)),revenue=total(closes);
+      const attributable=spendBy.has(t.id),spend=spendBy.get(t.id)||0,paidQuotes=quotes.filter(paid).length,paidCloses=closes.filter(paid);
+      const m=attributable?campaignMetrics({spendCents:spend,quotes:paidQuotes,closed:paidCloses.length,revenueCents:revenue,paidRevenueCents:total(paidCloses)}):null;
+      return {tag:t.id,label:t.label,quotes:quotes.length,closed:closes.length,revenueCents:revenue,conversion:quotes.length?quotes.filter(r=>r.op.status==='completed').length/quotes.length:null,
+        paidQuotes,paidClosed:paidCloses.length,attributable,investmentCents:attributable?spend:null,
+        costPerQuoteCents:m?.costPerQuoteCents??null,costPerCloseCents:m?.costPerCloseCents??null,roas:m?.roas??null};
+    }).filter(r=>r.tag!==''||r.quotes||r.closed);
+    const multi=cohort.some(r=>(r.tags||[]).length>1)||done.some(r=>(r.tags||[]).length>1);
+    const attributed=campaigns.filter(c=>c.tag).reduce((a,c)=>a+c.spendCents,0),spendTotal=campaigns.reduce((a,c)=>a+c.spendCents,0);
+    return {rows,overlapping:multi,campaigns,spendTotalCents:spendTotal,attributedSpendCents:attributed,unattributedSpendCents:spendTotal-attributed,
+      method:'Investimento das campanhas marcadas com a tag ÷ orçamentos (ou fechamentos) da tag com origem Google/Meta Ads no período.'};
   }
   connectedProviders(){try{return this.repo.db.prepare('SELECT provider FROM integration_connections').all().map(r=>r.provider)}catch{return []}}
 
@@ -289,13 +363,15 @@ export class CommercialService{
 const validPartnerId=v=>typeof v==='string'&&/^[a-zA-Z0-9-]{8,60}$/.test(v)?v:null;
 
 export function registerCommercial(app,commercial,wrap){
-  app.get('/api/dashboard',(req,res)=>res.json(commercial.dashboard({from:req.query.from,to:req.query.to,channel:req.query.channel||'all'})));
+  app.get('/api/dashboard',(req,res)=>res.json(commercial.dashboard({from:req.query.from,to:req.query.to,channel:req.query.channel||'all',origin:req.query.origin,services:req.query.services,tags:req.query.tags})));
   app.get('/api/tags',(req,res)=>res.json(commercial.tags()));
+  app.put('/api/finance/campaign-tags',(req,res)=>res.json(commercial.saveCampaignTags(req.body)));
   app.put('/api/tags',(req,res)=>res.json(commercial.saveTags(req.body)));
   app.get('/api/crm/funnels',(req,res)=>res.json({funnels:FUNNELS,origins:ORIGINS}));
   app.post('/api/proposals/:id/crm',(req,res)=>res.json(commercial.setStage(req.params.id,req.body)));
   app.get('/api/clients',(req,res)=>res.json(commercial.clients()));
   app.post('/api/clients',(req,res)=>res.json(commercial.createClient(req.body)));
+  app.post('/api/clients/import',(req,res)=>res.json(commercial.importClients(req.body)));
   app.get('/api/clients/:id',(req,res)=>res.json(commercial.clientDetail(req.params.id)));
   app.put('/api/clients/:id',(req,res)=>res.json(commercial.updateClient(req.params.id,req.body)));
   app.get('/api/partners',(req,res)=>res.json(commercial.partners()));

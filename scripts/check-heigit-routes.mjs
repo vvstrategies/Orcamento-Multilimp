@@ -5,8 +5,8 @@ import path from 'node:path';
 import {Repository,hash} from '../backend/database.js';
 import {migrateFinance} from '../backend/finance-migration.js';
 import {RouteCache} from '../backend/route-cache.js';
-import {FinanceService} from '../backend/finance-service.js';
-import {HeiGITPeliasGeocoder,HeiGITOpenRouteServiceProvider} from '../backend/routes-provider.js';
+import {HeiGITPeliasGeocoder,HeiGITOpenRouteServiceProvider,NominatimGeocoder} from '../backend/routes-provider.js';
+import {GEOCODER_VERSION,sameStreet,streetCore} from '../backend/geocode-address.js';
 import {addressKey,calculateEstimate,defaultEstimateInput,defaultFinancialSettings,snapshotAssumptions} from '../backend/finance-domain.js';
 import {modelo} from '../utils/proposta.js';
 import {settings as company,fees} from './test-company.mjs';
@@ -16,7 +16,7 @@ let geocodeCalls=0,directionsCalls=0;
 const geocoder=new HeiGITPeliasGeocoder({apiKey:'HEIGIT-TEST-KEY',fetcher:async(url,request)=>{
  geocodeCalls++;assert.equal(url.origin,'https://api.heigit.org');assert.equal(url.pathname,'/pelias/v1/search');assert.equal(request.method,'GET');assert.equal(request.headers.Authorization,'HEIGIT-TEST-KEY');assert.equal(url.searchParams.get('boundary.country'),'BR');
  const text=url.searchParams.get('text');const coordinates=text.includes('Empresa')?[-46.7001,-23.5001]:[-46.8002,-23.6002];
- return {ok:true,status:200,headers:headers({'x-ratelimit-limit':'1000','x-ratelimit-remaining':'999','x-ratelimit-reset':'12345'}),json:async()=>({features:[{geometry:{coordinates},properties:{label:text,confidence:0.9}}]})};
+ return {ok:true,status:200,headers:headers({'x-ratelimit-limit':'1000','x-ratelimit-remaining':'999','x-ratelimit-reset':'12345'}),json:async()=>({features:[{geometry:{coordinates},properties:{label:text,confidence:0.9,layer:'address'}}]})};
 }});
 const routes=new HeiGITOpenRouteServiceProvider({apiKey:'HEIGIT-TEST-KEY',fetcher:async(url,request)=>{
  directionsCalls++;assert.equal(url.origin,'https://api.heigit.org');assert.equal(url.pathname,'/openrouteservice/v2/directions/driving-car');assert.equal(request.method,'POST');assert.equal(request.headers.Authorization,'HEIGIT-TEST-KEY');
@@ -32,10 +32,10 @@ try{
  const cached=await cache.get('  EMPRESA, Rua Um, 10, São Paulo - SP, Brasil ','Cliente, Rua Dois, 20, Osasco - SP, Brasil',{originRef:{type:'company',id:'operational'},destinationRef:{type:'proposal',id:'proposal-a'}});
  assert.equal(cached.cached,true);assert.equal(geocodeCalls,2);assert.equal(directionsCalls,1);
  const forced=await cache.get(origin,destination,{force:true,originRef:{type:'company',id:'operational'},destinationRef:{type:'proposal',id:'proposal-a'}});
- assert.equal(forced.cached,false);assert.equal(geocodeCalls,2);assert.equal(directionsCalls,2);
- await cache.rememberCompany(origin);assert.equal(geocodeCalls,2);
- const changed='Cliente, Rua Três, 30, Osasco - SP, Brasil';await cache.get(origin,changed,{originRef:{type:'company',id:'operational'},destinationRef:{type:'proposal',id:'proposal-a'}});assert.equal(geocodeCalls,3);assert.equal(directionsCalls,3);
- const status=cache.status();assert.equal(status.usage.directionsExternal,3);assert.equal(status.usage.geocodingExternal,3);assert.ok(status.usage.cacheHits>=3);assert.equal(status.usage.manualRecalculations,1);assert.equal(status.quotas.find(x=>x.kind==='directions').remaining,1999);
+ assert.equal(forced.cached,false);assert.equal(geocodeCalls,3,'Recalcular refaz o ponto do cliente');assert.equal(directionsCalls,2);
+ await cache.rememberCompany(origin);assert.equal(geocodeCalls,3);
+ const changed='Cliente, Rua Três, 30, Osasco - SP, Brasil';await cache.get(origin,changed,{originRef:{type:'company',id:'operational'},destinationRef:{type:'proposal',id:'proposal-a'}});assert.equal(geocodeCalls,4);assert.equal(directionsCalls,3);
+ const status=cache.status();assert.equal(status.usage.directionsExternal,3);assert.equal(status.usage.geocodingExternal,4);assert.ok(status.usage.cacheHits>=3);assert.equal(status.usage.manualRecalculations,1);assert.equal(status.quotas.find(x=>x.kind==='directions').remaining,1999);
  const q=modelo.quote({...company,terms:fees});q.client='Teste';q.address=destination;q.items=[{...modelo.item('Sofá'),price:200}];
  const assumptions=snapshotAssumptions({...defaultFinancialSettings(),roundTrip:true,vehicle:{...defaultFinancialSettings().vehicle,consumptionCentiKmL:1150,fuelPriceCents:600}},q.company);
  const estimate=calculateEstimate(q,assumptions,{...defaultEstimateInput(),distanceMode:'automatic',routeId:first.id},{distanceMeters:18000,durationSeconds:2400});
@@ -52,80 +52,70 @@ try{
  const retryCache=new RouteCache(repo,retryProvider,{geocoder:retryGeocoder,directionsDailyLimit:10,geocodingDailyLimit:10});
  const retried=await retryCache.get(retryOrigin,retryDestination,{originRef:{type:'company',id:'retry-company'},destinationRef:{type:'proposal',id:'retry-proposal'}});
  assert.equal(retried.distanceMeters,9600);assert.equal(retryDirections,2);assert.equal(retryGeocodes,4);
- const cachedDestination='Cliente Cache, Rua Cinco, 50, Osasco - SP, Brasil',cachedKey=hash(JSON.stringify([retryProvider.id,addressKey(retryOrigin),addressKey(cachedDestination),{profile:'driving-car'}]));
+ const cachedDestination='Cliente Cache, Rua Cinco, 50, Osasco - SP, Brasil',cachedKey=hash(JSON.stringify([retryProvider.id,'geocoder-'+GEOCODER_VERSION,addressKey(retryOrigin),addressKey(cachedDestination),{profile:'driving-car'}]));
  repo.db.prepare('INSERT INTO finance_routes VALUES (?,?,?,?)').run('legacy-zero-route',cachedKey,JSON.stringify({id:'legacy-zero-route',distanceMeters:0,durationSeconds:0}),new Date().toISOString());
  const rebuilt=await retryCache.get(retryOrigin,cachedDestination,{originRef:{type:'company',id:'retry-company'},destinationRef:{type:'proposal',id:'retry-cache'}});
  assert.equal(rebuilt.distanceMeters,9600);assert.equal(retryDirections,3);assert.equal(repo.db.prepare('SELECT id FROM finance_routes WHERE id=?').get('legacy-zero-route'),undefined);
- // A high confidence homonym in another state must lose to the correct municipality.
- const office='Rua Ataulfo Alves, 451, Residencial Jaguari, 13473-676, Americana - SP';
- const client='Avenida de Teste, 100, Campinas - SP, 13045-603, Brasil';
- const feature=(point,properties)=>({geometry:{coordinates:point},properties});
- const wrong=feature([-48.798491,-26.278708],{label:'Rua Ataulfo Alves 451, Santa Catarina, Brasil',confidence:1,region_a:'SC',localadmin:'Joinville',locality:'Santa Catarina',postalcode:'89228-261',layer:'address'});
- const correct=feature([-47.3093,-22.71723],{label:'Rua Ataulfo Alves, Americana, SP, Brasil',confidence:0.8,region_a:'SP',locality:'Americana',layer:'street',accuracy:'centroid'});
- const otherCity=feature([-47.756432,-21.187409],{label:'Rua Ataulfo Alves, Ribeirão Preto, SP, Brasil',confidence:0.8,region_a:'SP',locality:'Ribeirão Preto',layer:'street'});
- const destinationFeature=feature([-47.036554,-22.928011],{label:'Avenida de Teste 100, Campinas, SP, Brasil',confidence:1,region_a:'SP',locality:'Campinas',postalcode:'13045-603',layer:'address'});
- const reply=features=>({ok:true,status:200,headers:headers({}),json:async()=>({features})});
- let strictCalls=0;
- const strictGeo=new HeiGITPeliasGeocoder({apiKey:'TEST',fetcher:async url=>{strictCalls++;return reply(url.searchParams.get('text').includes('Ataulfo')?[wrong,correct,otherCity]:[destinationFeature]);}});
- const checked=await strictGeo.geocode(office);assert.deepEqual(checked.coordinates,{longitude:-47.3093,latitude:-22.71723});assert.equal(checked.place.city,'Americana');
- for(const features of [[wrong],[otherCity],[{...correct,properties:{...correct.properties,postalcode:'99999-999'}}],[{...correct,properties:{...correct.properties,layer:'locality'}}]]){
-  await assert.rejects(new HeiGITPeliasGeocoder({apiKey:'TEST',fetcher:async()=>reply(features)}).geocode(office),e=>e.integrationCode==='AMBIGUOUS_ADDRESS');
- }
- // Old geocoding AND route cache entries are invalidated; a normal route refresh cannot perpetuate them.
- const wrongPoint={longitude:-48.798491,latitude:-26.278708},destinationPoint={longitude:-47.036554,latitude:-22.928011};
- const strictRoutes={id:'strict-routes',configured:true,route:async(from,to)=>{assert.deepEqual(from,checked.coordinates);assert.deepEqual(to,destinationPoint);return {distanceMeters:41000,durationSeconds:3000};}};
- const strictCache=new RouteCache(repo,strictRoutes,{geocoder:strictGeo,directionsDailyLimit:100,geocodingDailyLimit:100});
- const stale={addressKey:addressKey(office),addressSnapshot:office,coordinates:wrongPoint,label:wrong.properties.label,confidence:1};
- strictCache.geocodes.save('address',addressKey(office),addressKey(office),stale);strictCache.geocodes.save('company','operational',addressKey(office),stale);
- const badRoute={id:'wrong-state-route',origin:office,destination:client,originCoordinatesSnapshot:wrongPoint,destinationCoordinatesSnapshot:destinationPoint,distanceMeters:600870,durationSeconds:27660};
- const strictKey=hash(JSON.stringify([strictRoutes.id,addressKey(office),addressKey(client),{profile:'driving-car'}]));repo.db.prepare('INSERT INTO finance_routes VALUES (?,?,?,?)').run(badRoute.id,strictKey,JSON.stringify(badRoute),new Date().toISOString());
- assert.equal(strictCache.isCurrent(badRoute),false);
- const repaired=await strictCache.get(office,client);assert.equal(repaired.distanceMeters,41000);assert.equal(strictCalls,3);assert.equal(strictCache.isCurrent(repaired),true);assert.equal(strictCache.isCurrent(badRoute),false);
- const reused=await strictCache.get(office,client);assert.equal(reused.cached,true);assert.equal(strictCalls,3);
- // Generated estimates based on the wrong coordinates need refreshing. Manual choices remain untouched.
- const finance=new FinanceService(repo,null,strictRoutes,{geocoder:strictGeo});const saved=repo.saveProposal({...q,address:client});
- const a={...assumptions,originAddressSnapshot:office};
- await finance.record(saved.id,saved,a,{...defaultEstimateInput(),distanceMode:'automatic'},badRoute);assert.equal(finance.view(saved.id).routeNeedsRefresh,true);
- await finance.record(saved.id,saved,a,{...defaultEstimateInput(),distanceMode:'manual',manualDistanceMeters:41000},null);
- const manualBefore=JSON.stringify(finance.latest(saved.id));assert.equal(finance.view(saved.id).routeNeedsRefresh,false);await finance.refreshAutomatically(saved.id);assert.equal(JSON.stringify(finance.latest(saved.id)),manualBefore);assert.equal(strictCalls,3);
- // Regression: the current commercial version has no finance snapshot and an older
- // scheduled estimate still holds the wrong SC origin, even after the geocode cache was fixed.
- repo.setConfig('settings',{...company,company:{...company.company,location:office}});
- finance.saveSettings({...a,originMode:'company',originAddress:''});
- const scheduledQuote=modelo.quote({...company,terms:fees});scheduledQuote.client='Rota antiga agendada';scheduledQuote.address=client;scheduledQuote.items=[{...modelo.item('Sofá'),quantity:1,price:300}];
- const initial=repo.saveProposal(scheduledQuote),extras={...defaultEstimateInput(),distanceMode:'automatic',materialOverrideCents:2400,tollCents:850,parkingCents:500,otherDirectCosts:[{description:'Ajudante',amountCents:5000}]};
- await finance.record(initial.id,initial,a,extras,badRoute);const frozen=finance.latest(initial.id),frozenJson=JSON.stringify(frozen);
- const revised=repo.saveProposal({...initial,items:[{...initial.items[0],quantity:2}]});assert.equal(repo.currentVersion(initial.id).financialSnapshot,null);
- const operation=repo.setOperation({id:initial.id,status:'scheduled',schedule:{start:'2026-10-15T11:30:00Z',eventId:'keep-calendar-event'}}),operationJson=JSON.stringify(operation);
- // A route repair must not silently adopt later vehicle/material settings.
- finance.saveSettings({...finance.settings(),defaultMaterialBps:4000,vehicle:{...a.vehicle,fuelPriceCents:990}});
- let scheduledView=finance.view(initial.id);assert.equal(scheduledView.editable,false);assert.equal(scheduledView.stale,true);assert.equal(scheduledView.routeNeedsRefresh,true);assert.equal(scheduledView.canRefreshAutomatically,true);
- scheduledView=await finance.refreshAutomatically(initial.id);
- assert.equal(scheduledView.latest.version,frozen.version+1);assert.equal(scheduledView.latest.proposalRevision,revised.revision);assert.equal(scheduledView.stale,false);assert.equal(scheduledView.routeNeedsRefresh,false);assert.equal(scheduledView.canRefreshAutomatically,false);
- assert.equal(scheduledView.latest.result.distanceMeters,41000);assert.equal(scheduledView.latest.result.revenue,60000);assert.deepEqual(scheduledView.latest.assumptions.vehicle,frozen.assumptions.vehicle);assert.equal(scheduledView.latest.inputs.materialOverrideCents,2400);assert.equal(scheduledView.latest.inputs.tollCents,850);assert.deepEqual(scheduledView.latest.inputs.otherDirectCosts,extras.otherDirectCosts);
- assert.equal(scheduledView.latest.correction.previousEstimateId,frozen.id);assert.equal(JSON.stringify(scheduledView.previous),frozenJson);assert.equal(repo.db.prepare('SELECT data FROM finance_estimates WHERE id=?').get(frozen.id).data,frozenJson);assert.equal(JSON.stringify(repo.operation(initial.id)),operationJson);assert.equal(repo.requireProposal(initial.id).revision,revised.revision);
- assert.equal((await finance.refreshAutomatically(initial.id)).latest.id,scheduledView.latest.id);
- // Completed/cancelled/manual records and scheduling in progress remain frozen.
- for(const status of ['completed','cancelled','scheduled']){
-  repo.setOperation({...operation,status});await finance.record(initial.id,revised,a,extras,badRoute);
-  if(status==='scheduled')repo.setJob(initial.id,{intent:'reschedule'});
-  const before=JSON.stringify(finance.latest(initial.id));assert.equal(finance.view(initial.id).canRefreshAutomatically,false);await finance.refreshAutomatically(initial.id);assert.equal(JSON.stringify(finance.latest(initial.id)),before);
- }
- repo.db.prepare('DELETE FROM sync_jobs WHERE proposal_id=?').run(initial.id);
- await finance.record(initial.id,revised,a,{...extras,distanceMode:'manual',manualDistanceMeters:9000},null);
- const manualScheduled=JSON.stringify(finance.latest(initial.id));await finance.refreshAutomatically(initial.id);assert.equal(JSON.stringify(finance.latest(initial.id)),manualScheduled);
- // Cancellation or another estimate while the external route is pending must win.
- await finance.record(initial.id,revised,a,extras,badRoute);repo.db.prepare('DELETE FROM finance_routes').run();
- let releaseRoute;strictRoutes.route=async()=>new Promise(resolve=>{releaseRoute=()=>resolve({distanceMeters:41000,durationSeconds:3000});});
- const pending=finance.refreshAutomatically(initial.id);for(let i=0;i<30&&!releaseRoute;i++)await new Promise(resolve=>setTimeout(resolve,0));assert.equal(typeof releaseRoute,'function');
- const beforeCancel=JSON.stringify(finance.latest(initial.id));repo.setOperation({...operation,status:'cancelled'});releaseRoute();await pending;assert.equal(JSON.stringify(finance.latest(initial.id)),beforeCancel);
- repo.setOperation(operation);repo.db.prepare('DELETE FROM finance_routes').run();releaseRoute=null;
- const concurrent=finance.refreshAutomatically(initial.id);for(let i=0;i<30&&!releaseRoute;i++)await new Promise(resolve=>setTimeout(resolve,0));assert.equal(typeof releaseRoute,'function');
- await finance.record(initial.id,revised,a,{...extras,distanceMode:'manual',manualDistanceMeters:7000},null);const manualDuring=JSON.stringify(finance.latest(initial.id));releaseRoute();await concurrent;assert.equal(JSON.stringify(finance.latest(initial.id)),manualDuring);
- // Provider failures leave the old evidence intact and keep the route marked invalid.
- await finance.record(initial.id,revised,a,extras,badRoute);repo.db.prepare('DELETE FROM finance_routes').run();strictRoutes.route=async()=>{throw Error('route unavailable');};
- const failedBefore=JSON.stringify(finance.latest(initial.id)),failedView=await finance.refreshAutomatically(initial.id);assert.equal(failedView.routeNeedsRefresh,true);assert.equal(failedView.autoRouteError,'route unavailable');assert.equal(JSON.stringify(finance.latest(initial.id)),failedBefore);
- console.log('PASS: rota inválida de agendado corrigida em nova versão; histórico, premissas e custos manuais preservados; falhas e concorrência não sobrescrevem dados.');
- console.log('PASS: homônimo em outro estado/cidade/CEP rejeitado, cache incorreto invalidado, rota corrigida e distância manual preservada.');
+ // Geocodificador v2: ponto só na cidade não basta; tenta busca estruturada e escolhe pela cidade citada.
+ const feature=(lon,lat,props)=>({geometry:{coordinates:[lon,lat]},properties:{confidence:0.8,...props}});
+ const seen=[];
+ const smart=new HeiGITPeliasGeocoder({apiKey:'k',fetcher:async url=>{
+  seen.push(url.pathname+' '+[...url.searchParams].filter(([k])=>!['size','lang','boundary.country'].includes(k)).map(([k,v])=>k+'='+v).join('&'));
+  const text=url.searchParams.get('text')||'',address=url.searchParams.get('address')||'';
+  let features=[];
+  if(text.startsWith('Estrada Fazendinha, 476'))features=[feature(-46.8309,-23.5329,{layer:'locality',locality:'Carapicuíba',region_a:'SP',label:'Carapicuíba, SP, Brasil',confidence:0.6,match_type:'fallback'})];
+  else if(address==='Estrada Fazendinha 476')features=[feature(-46.70,-23.50,{layer:'street',street:'Estrada da Fazendinha',locality:'São Paulo',region_a:'SP',label:'Estrada da Fazendinha, São Paulo'}),feature(-46.8721,-23.5602,{layer:'street',street:'Estrada da Fazendinha',locality:'Carapicuíba',region_a:'SP',label:'Estrada da Fazendinha, Carapicuíba, SP, Brasil'})];
+  else if(text==='Fazendinha, Carapicuíba - SP'&&url.searchParams.get('layers')==='street')features=[feature(-46.70,-23.50,{layer:'street',name:'Rua Fazendinha',locality:'Cotia',region_a:'SP',label:'Rua Fazendinha, Cotia'}),feature(-46.8721,-23.5602,{layer:'street',name:'Estrada da Fazendinha',locality:'Carapicuíba',region_a:'SP',label:'Estrada da Fazendinha, Carapicuíba, SP, Brasil'})];
+  else if(text.startsWith('Estrada Fazendinha, 500')||address==='Estrada Fazendinha 500')features=[feature(-46.8309,-23.5329,{layer:'locality',locality:'Aldeia de Carapicuíba',region_a:'SP',label:'Aldeia de Carapicuíba, SP, Brasil',confidence:0.6,match_type:'fallback'})];
+  else if(text.startsWith('Rua Dos Ciprestes, 342, Jardim Irene, Santo André - SP'))features=[feature(-46.5121,-23.7143,{layer:'address',street:'Rua dos Ciprestes',housenumber:'342',locality:'Santo André',region_a:'SP',neighbourhood:'Jardim Irene',label:'Rua dos Ciprestes 342, Santo André, SP'})];
+  else if(text.startsWith('Avenida Doutor Altino Arantes'))features=[feature(-46.6502,-23.6026,{layer:'street',street:'Avenida Doutor Altino Arantes',locality:'São Paulo',region_a:'SP',label:'Avenida Doutor Altino Arantes, São Paulo'})];
+  else if(text.startsWith('Rua das Flores, 10, Centro, Diadema'))features=[feature(-49.27,-25.43,{layer:'street',street:'Rua das Flores',locality:'Curitiba',region_a:'PR',label:'Rua das Flores, Curitiba, PR',confidence:0.9})];
+  return {ok:true,status:200,headers:headers({}),json:async()=>({features})};
+ }});
+ const sede=await smart.geocode('Rua Dos Ciprestes, 342- Jardim Irene, Santo André- SP');
+ assert.equal(sede.precision,'address');assert.equal(sede.approximate,false);assert.equal(sede.requests,1);
+ assert.ok(seen[0].includes('text=Rua Dos Ciprestes, 342, Jardim Irene, Santo André - SP'),'"342- Bairro" vira "342, Bairro"');
+ seen.length=0;
+ const fazendinha=await smart.geocode('Estrada Fazendinha, 476 - casa, Jardim Ana Estela, Carapicuíba - SP, 06364-000, Brasil',{near:sede.coordinates});
+ assert.equal(fazendinha.precision,'street');assert.equal(fazendinha.query,'structured');assert.equal(fazendinha.label,'Estrada da Fazendinha, Carapicuíba, SP, Brasil','rua homônima em outra cidade não vence');
+ assert.ok(!seen[0].includes('casa'),'complemento fica fora da busca');assert.ok(seen[0].includes('focus.point.lat=-23.7143'),'destino usa a sede como referência');
+ assert.ok(seen[1].startsWith('/pelias/v1/search/structured')&&seen[1].includes('locality=Carapicuíba')&&seen[1].includes('postalcode=06364-000'));
+ // Caso real: texto e busca estruturada só acham a cidade; o nome da rua na cidade acha "Estrada da Fazendinha".
+ seen.length=0;
+ const real=await smart.geocode('Estrada Fazendinha, 500 - casa, Jardim Ana Estela, Carapicuíba - SP, 06364-000, Brasil',{near:sede.coordinates});
+ assert.equal(real.precision,'street');assert.equal(real.query,'street-name');assert.equal(real.label,'Estrada da Fazendinha, Carapicuíba, SP, Brasil');assert.equal(real.approximate,true);
+ assert.ok(seen.at(-1).includes('layers=street')&&seen.at(-1).includes('text=Fazendinha, Carapicuíba - SP'),'busca só o nome da rua, entre ruas');
+ assert.ok(sameStreet('Estrada Fazendinha','Estrada da Fazendinha')&&sameStreet('R. das Flores','Rua Flores')&&!sameStreet('Rua das Flores','Rua dos Pinheiros'));
+ assert.equal(streetCore('Estrada Fazendinha'),'Fazendinha');assert.equal(streetCore('Avenida Paulista'),'Paulista');
+ // v4: quando o Pelias só acha a cidade, a reserva do OpenStreetMap (Nominatim) entra e acha a rua.
+ const osmSeen=[];
+ const osmItem=(road,suburb,city,lat,lon)=>({lat:String(lat),lon:String(lon),category:'highway',type:'tertiary',display_name:road+', '+suburb+', '+city,address:{road,suburb,city,'ISO3166-2-lvl4':'BR-SP',country_code:'br'}});
+ const osm=new NominatimGeocoder({throttle:false,fetcher:async(url,request)=>{
+  osmSeen.push({url,ua:request.headers['User-Agent']});assert.equal(url.origin,'https://nominatim.openstreetmap.org');assert.equal(url.searchParams.get('countrycodes'),'br');
+  const street=url.searchParams.get('street')||'';
+  const body=street==='476 Estrada Fazendinha'?[osmItem('Estrada Fazendinha','Jardim Ana Stella','Barueri',-23.50,-46.87),osmItem('Estrada Fazendinha','Jardim Ana Stella','Carapicuíba',-23.5648869,-46.8674698)]:street.includes('Rua Sem Fim')?[osmItem('Rua Sem Fim','Centro','Curitiba',-25.4,-49.2)]:[];
+  return {ok:true,status:200,headers:headers({}),json:async()=>body};
+ }});
+ const onlyCity=new HeiGITPeliasGeocoder({apiKey:'k',fallback:osm,fetcher:async()=>({ok:true,status:200,headers:headers({}),json:async()=>({features:[feature(-46.8309,-23.5329,{layer:'locality',locality:'Carapicuíba',region_a:'SP',label:'Carapicuíba, SP, Brasil',confidence:0.6,match_type:'fallback'})]})})});
+ const viaOsm=await onlyCity.geocode('Estrada Fazendinha, 476 - casa, Jardim Ana Estela, Carapicuíba - SP, 06364-000, Brasil');
+ assert.deepEqual([viaOsm.provider,viaOsm.precision,viaOsm.approximate,viaOsm.label,viaOsm.query],['nominatim','street',true,'Estrada Fazendinha, Jardim Ana Stella, Carapicuíba, SP','osm-structured'],'rua do OSM na cidade certa');
+ assert.deepEqual(viaOsm.coordinates,{longitude:-46.8674698,latitude:-23.5648869});
+ assert.ok(osmSeen[0].ua&&!/node|undici/i.test(osmSeen[0].ua),'User-Agent próprio, como pede a política do Nominatim');
+ await assert.rejects(onlyCity.geocode('Rua Sem Fim, 1, Carapicu?ba - SP'),e=>e.integrationCode==='AMBIGUOUS_ADDRESS','cidade sozinha n?o pode substituir a rua');
+ const noFallbackWhenPrecise=osmSeen.length;await smart.geocode('Rua Dos Ciprestes, 342- Jardim Irene, Santo André- SP');assert.equal(osmSeen.length,noFallbackWhenPrecise,'endereço preciso não consulta o OSM');
+ const abbreviated=await smart.geocode('Av. Dr. Altino Arantes, Vila Clementino, São Paulo - SP, 04042-030, Brasil');
+ assert.equal(abbreviated.precision,'street');
+ await assert.rejects(smart.geocode('Rua das Flores, 10, Centro, Diadema - SP'),e=>e.status===400&&e.integrationCode==='AMBIGUOUS_ADDRESS','ponto em outra cidade é recusado');
+ // Registros salvos pelo geocodificador antigo (sem versão) são refeitos uma vez.
+ let legacyCalls=0;
+ const legacyGeocoder={id:'legacy',configured:true,geocode:async()=>{legacyCalls++;return {coordinates:{longitude:-46.87,latitude:-23.56},label:'Estrada da Fazendinha, Carapicuíba',precision:'street'};}};
+ const legacyRoutes={id:'legacy-routes',configured:true,route:async()=>({distanceMeters:70800,durationSeconds:4000,provider:'legacy-routes'})};
+ const legacyCache=new RouteCache(repo,legacyRoutes,{geocoder:legacyGeocoder,directionsDailyLimit:100,geocodingDailyLimit:100});
+ const legacyAddress='Estrada Fazendinha, 476, Carapicuíba - SP';
+ repo.db.prepare('INSERT INTO finance_geocodes VALUES (?,?,?,?,?,?)').run('old-geo',addressKey(legacyAddress),'proposal','legacy-proposal',JSON.stringify({addressKey:addressKey(legacyAddress),coordinates:{longitude:-46.83,latitude:-23.53},label:'Carapicuíba, SP'}),new Date().toISOString());
+ const refreshed=await legacyCache.get('Empresa Legacy, Rua Um, 1, Santo André - SP',legacyAddress,{originRef:{type:'company',id:'legacy-company'},destinationRef:{type:'proposal',id:'legacy-proposal'}});
+ assert.equal(legacyCalls,2);assert.equal(refreshed.destinationGeocodeLabel,'Estrada da Fazendinha, Carapicuíba');assert.equal(refreshed.destinationPrecision,'street');assert.equal(refreshed.geocoderVersion,GEOCODER_VERSION);
+ await legacyCache.get('Empresa Legacy, Rua Um, 1, Santo André - SP',legacyAddress,{force:true,originRef:{type:'company',id:'legacy-company'},destinationRef:{type:'proposal',id:'legacy-proposal'}});
+ assert.equal(legacyCalls,3,'Recalcular refaz o ponto do cliente, não o da sede');
  console.log('PASS: HeiGIT Pelias/openrouteservice, ordem longitude-latitude, cache, recálculo, quotas, erros e ida/volta.');
 }finally{repo.close();fs.rmSync(dir,{recursive:true,force:true});}

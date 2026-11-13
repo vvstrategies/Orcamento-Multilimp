@@ -12,7 +12,7 @@
   const badge=status=>`<span class="status-badge ${status}">${esc(O.statuses[status])}</span>`;
   const initials=name=>name.trim().split(/\s+/).slice(0,2).map(s=>s[0]).join('').toUpperCase()||'OU';
   let picking=false,anchor=null;const picked=new Set();
-  let pipeline='generated',funnel='comercial',tagFilter='',showCancelled=false,tagList=[],clientIndex=new Map(),settled=null,lastCounts={};
+  let pipeline='generated',funnel='comercial',showCancelled=false,tagList=[],clientIndex=new Map(),settled=null,lastCounts={};
   let quotes=[],operations=new Map(),documents=[],demo=false,examples=[],exampleOperations=new Map(),exampleDocs=[],selected=null,view='quotes',refreshSerial=0,viewerURL,review=null,initialized=false;
   const getQuotes=()=>demo?examples:quotes;
   const getOp=id=>O.normalize((demo?exampleOperations:operations).get(id)||{id});
@@ -21,20 +21,22 @@
   function totals(q){try{return M.totals(q)}catch{return null}}
   function hydrateIcons(){for(const element of $$('[data-icon]'))element.innerHTML=icon(element.dataset.icon)}
   function navigate(next,update=true){
-    const views=['home','quotes','clients','create','settings','finance'];
+    const views=['home','quotes','clients','create','settings','finance','sales','traffic'];
     if(!views.includes(next))next='home';view=next;
     for(const name of views){const el=$('#'+name+'-view'),show=name===next;if(show&&el.hidden){el.classList.remove('view-enter');void el.offsetWidth;el.classList.add('view-enter')}el.hidden=!show}
     for(const el of $$('.nav-item')){const active=el.dataset.nav===next;el.classList.toggle('active',active);if(active)el.setAttribute('aria-current','page');else el.removeAttribute('aria-current')}
-    $('#page-location').textContent={home:'Início',quotes:'Orçamentos',clients:'Clientes',create:'Novo orçamento',settings:'Configurações',finance:'Financeiro'}[next];
-    const hash={home:'inicio',quotes:'orcamentos',clients:'clientes',create:'criar',settings:'configuracoes',finance:'financeiro'}[next];
+    $('#page-location').textContent={home:'Início',quotes:'Orçamentos',clients:'Clientes',create:'Novo orçamento',settings:'Configurações',finance:'Financeiro',sales:'Vendas & Receita',traffic:'Tráfego pago'}[next];
+    const hash={home:'inicio',quotes:'orcamentos',clients:'clientes',create:'criar',settings:'configuracoes',finance:'financeiro',sales:'vendas',traffic:'trafego'}[next];
     if(update&&location.hash!=='#'+hash)location.hash=hash;
     if(next==='finance')window.UniversalDre?.open();
     if(next==='quotes')refresh().catch(error=>notify(error.message));
     if(next==='home')window.EcoHome?.open();
     if(next==='clients')window.EcoClients?.open();
+    if(next==='sales')window.EcoSales?.open();
+    if(next==='traffic')window.EcoTraffic?.open();
     window.scrollTo({top:0,behavior:'instant'});
   }
-  function fromHash(){navigate({'#orcamentos':'quotes','#clientes':'clients','#criar':'create','#configuracoes':'settings','#financeiro':'finance'}[location.hash]||'home',false)}
+  function fromHash(){navigate({'#orcamentos':'quotes','#clientes':'clients','#criar':'create','#configuracoes':'settings','#financeiro':'finance','#vendas':'sales','#trafego':'traffic'}[location.hash]||'home',false)}
   async function refresh(){
     const serial=++refreshSerial;
     const [list,ops,pdfs,tags,clients]=await Promise.all([S.summaries?S.summaries():S.all('quotes'),S.all('operations'),S.all('pdfs'),EcoAuth.online?EcoCache.get('/api/tags').catch(()=>null):null,EcoAuth.online?EcoCache.get('/api/clients').catch(()=>[]):[]]);
@@ -43,7 +45,8 @@
     quotes=list.sort((a,b)=>(b.updatedAt||b.date).localeCompare(a.updatedAt||a.date));operations=new Map(ops.map(x=>[x.id,x]));documents=pdfs;
     $('#nav-count').textContent=quotes.length;renderLibrary();
   }
-  function filters(){return {search:$('#search').value.trim(),status:'',scheduled:'',from:$('#date-from').value,to:$('#date-to').value}}
+  // Período, origem, serviço, tipo de cliente e status vêm da barra do topo (EcoFilters, escopo 'quotes'); a busca é local.
+  function filters(){return {search:$('#search').value.trim(),status:'',scheduled:'',from:'',to:''}}
   const FUNNELS={
     comercial:[['generated','Gerados'],['scheduled','Agendados'],['completed','Concluídos'],['cancelled','Cancelados']],
     follow:[['f1','1º contato · D+2'],['f2','2º contato · D+7'],['f3','Última tentativa · D+15'],['lost','Perdidos']],
@@ -93,17 +96,22 @@
     const all=getQuotes(),f=filters(),invalid=f.from&&f.to&&f.from>f.to;
     $('#filter-error').hidden=!invalid;$('#filter-error').textContent=invalid?'A data inicial deve ser anterior ou igual à data final.':'';
     if(invalid)return [];
-    return all.filter(q=>{const op=getOp(q.id);return O.matches(q,op,{...f,status:op.status})&&(!tagFilter||(tagFilter==='__none'?!(q.tags||[]).length:(q.tags||[]).includes(tagFilter)))});
+    return all.filter(q=>{const op=getOp(q.id);return O.matches(q,op,{...f,status:op.status})&&passFilter(q)});
   }
+  // Filtros combináveis: tags (Corporativo/Residencial = tipo de cliente) filtram q.tags; origem filtra q.origin; status, a etapa.
+  function passFilter(q){
+    return EcoFilters.match('quotes',{date:q.date,origin:q.origin,services:q.items.map(i=>i.service),tags:q.tags||[],status:getOp(q.id).status});
+  }
+  const cancelledShown=()=>showCancelled||EcoFilters.get('quotes').statuses.includes('cancelled');
   function renderLibrary(){
     const all=getQuotes(),list=visible();
-    $('#demo-banner').hidden=!demo;$('#show-demo').hidden=demo;
+    $('#demo-banner').hidden=!demo;
     const counts={comercial:list.filter(q=>getOp(q.id).status!=='cancelled').length,follow:0,pos:0},saved=funnel;
     for(const name of ['follow','pos']){funnel=name;counts[name]=list.filter(q=>stageOf(q,getOp(q.id))).length}funnel=saved;
     for(const name of ['comercial','follow','pos'])$('#count-'+name).textContent=counts[name];
-    $('#tag-filter').innerHTML=[['','Todas'],...tagList.map(t=>[t.id,t.label.charAt(0)+t.label.slice(1).toLowerCase()]),...(all.some(q=>!(q.tags||[]).length)?[['__none','Sem tag']]:[])].map(([id,label])=>`<button type="button" data-tag-filter="${esc(id)}" aria-pressed="${tagFilter===id}">${esc(label)}</button>`).join('');
-    $('#show-cancelled').hidden=funnel!=='comercial';$('#show-cancelled').setAttribute('aria-pressed',String(showCancelled));
-    const cols=FUNNELS[funnel].filter(([id])=>id!=='cancelled'||showCancelled);
+    $('#funnel-label').textContent={comercial:'Comercial',follow:'Follow-up',pos:'Pós-venda'}[funnel];$('#funnel-count').textContent=counts[funnel];
+    $('#show-cancelled').hidden=funnel!=='comercial';$('#show-cancelled').setAttribute('aria-pressed',String(cancelledShown()));
+    const cols=FUNNELS[funnel].filter(([id])=>id!=='cancelled'||cancelledShown());
     if(!all.length){$('#board').innerHTML=`<div class="empty-library"><span class="feature-icon">${icon('folder')}</span><h3>Seu próximo atendimento começa aqui.</h3><p>Crie sua primeira proposta com a identidade da empresa. Depois, acompanhe a aprovação e prepare o atendimento por aqui.</p><div class="empty-actions"><button class="primary" data-new>＋ Criar orçamento</button><button class="secondary" data-demo>Ver demonstração</button></div></div>`;$('#library-count-note').textContent='';return}
     // Conversão entre etapas (opção 1 da faixa): selo no encontro das colunas, sem cobrir o conteúdo.
     const n=id=>list.filter(q=>stageOf(q,getOp(q.id))===id).length,total=n('generated')+n('scheduled')+n('completed'),reached=n('scheduled')+n('completed');
@@ -141,6 +149,7 @@
     const present=[...new Set(getQuotes().filter(q=>picked.has(q.id)).flatMap(q=>q.tags||[]))];
     $('#bulk-tag-remove').innerHTML=opts('Remover tag…',present.map(id=>[id,pretty(tagLabel(id)),'tag']));
     for(const el of $$('#bulk-bar select'))el.disabled=!n||(el.id==='bulk-tag-remove'&&!present.length);
+    $('#bulk-delete').disabled=!n;$('#bulk-delete').textContent=n>1?`Excluir ${n} orçamentos`:'Excluir orçamento';
   }
   function applyBulk(change,description){
     const ids=[...picked];if(!ids.length)return;
@@ -150,7 +159,28 @@
       setPicking(false);
     });
   }
+  // Excluir pelo card: mesma regra da exclusão de versão no detalhe (DELETE /api/proposals/:id/versions/:versionId).
+  // Exclui a versão atual; se houver anterior, ela volta a ser a atual. Se for a única, o orçamento é arquivado (soft delete).
+  // Agendados, concluídos e com cobrança Asaas ativa são recusados pelo servidor para preservar o histórico.
+  async function deletePicked(){
+    const ids=[...picked];if(!ids.length)return;
+    let description='Esta ação removerá esta proposta da visualização ativa e dos cálculos aplicáveis.';
+    if(!demo&&ids.length===1){try{const versions=await EcoAuth.api('/api/proposals/'+encodeURIComponent(ids[0])+'/versions'),current=versions.find(v=>v.current);
+      description+=versions.length>1&&current?' A versão anterior mais recente passará a ser considerada como orçamento atual.':' Como é a única versão, o orçamento será arquivado: PDFs e histórico ficam preservados e o cadastro do cliente continua.'}catch(error){return notify(error.message)}}
+    else if(ids.length>1)description=`Esta ação removerá a versão atual de ${ids.length} propostas da visualização ativa e dos cálculos aplicáveis. Onde houver versão anterior, a mais recente passará a ser a atual; propostas de versão única serão arquivadas, com PDFs e histórico preservados. Agendadas, concluídas ou com cobrança ativa não serão excluídas.`;
+    confirmAction(ids.length>1?`Excluir ${ids.length} orçamentos?`:'Excluir orçamento?',description,'Excluir orçamento',async()=>{
+      if(demo){examples=examples.filter(q=>!ids.includes(q.id));setPicking(false);notify('Orçamento de exemplo removido.');return}
+      let promoted=0,archived=0;const failed=[];
+      for(const id of ids){try{const versions=await EcoAuth.api('/api/proposals/'+encodeURIComponent(id)+'/versions'),current=versions.find(v=>v.current);if(!current)throw Error('Versão atual não encontrada.');
+        const r=await EcoAuth.api('/api/proposals/'+encodeURIComponent(id)+'/versions/'+encodeURIComponent(current.id),{method:'DELETE'});if(r.archived)archived++;else promoted++;
+        if(selected===id&&r.archived)selected=null}catch(error){failed.push((findQuote(id)?.client||'Orçamento')+': '+error.message)}}
+      EcoCache.clear();window.dispatchEvent(new CustomEvent('eco:data-changed'));setPicking(false);await refresh();
+      const parts=[promoted&&`${promoted} com a versão anterior promovida`,archived&&`${archived} arquivado${archived>1?'s':''}`].filter(Boolean);
+      notify((parts.length?'Excluído: '+parts.join(' · ')+'.':'')+(failed.length?' Não excluído — '+failed.join(' | '):''));
+    });
+  }
   function bindBulk(){
+    $('#bulk-delete').onclick=()=>deletePicked();
     $('#select-mode').onclick=()=>setPicking(!picking);$('#bulk-clear').onclick=()=>setPicking(false);$('#bulk-all').onclick=()=>pickAll(boardIds());
     document.addEventListener('keydown',e=>{
       if(!(e.ctrlKey||e.metaKey)||e.key.toLowerCase()!=='a'||view!=='quotes'||document.querySelector('dialog[open]'))return;
@@ -279,7 +309,7 @@
     const paymentSlot=document.createElement('section');paymentSlot.className='detail-section';profitSlot.after(paymentSlot);window.MultilimpAsaas?.mount(paymentSlot,q,{demo});
     const actions=[];
     actions.push(`<button class="secondary" data-edit>${demo?'Ver gerador':'Editar orçamento'}</button>`);
-    
+
     if(['generated','scheduled'].includes(op.status))actions.push(`<button class="primary" data-schedule>${schedule?'Reagendar':'Aprovar e agendar'}</button>`);
     if(schedule&&['generated','scheduled'].includes(op.status)&&Date.parse(schedule.end)<=Date.now())actions.push('<button class="primary" data-status="completed">Marcar como concluído</button>');
     if(schedule&&['generated','scheduled'].includes(op.status))actions.push('<button class="text-button" data-cancel-schedule>Cancelar agendamento</button>');
@@ -357,7 +387,7 @@
     $('#pdf-view-actions').innerHTML=`<span>Documento guardado em ${date(document.generatedAt)}</span><button class="secondary" data-download-pdf="${esc(id)}">Baixar PDF</button><a href="${viewerURL}" target="_blank" rel="noopener">Abrir em outra aba ↗</a>`;
     $('#pdf-frame').src=viewerURL;$('#pdf-dialog').showModal();
   }
-  function clearFilters(){for(const id of ['search','date-from','date-to'])$('#'+id).value='';tagFilter='';renderLibrary()}
+  function clearFilters(){$('#search').value='';renderLibrary()}
   function makeExamples(){
     if(examples.length)return;
     const today=new Date(O.localDate()+'T12:00:00Z');
@@ -381,8 +411,8 @@
     if(button.classList.contains('proposal-card')&&e.shiftKey){pickRange(button.dataset.detail);return}
     if(button.classList.contains('proposal-card')&&(picking||e.ctrlKey||e.metaKey)){togglePick(button.dataset.detail);return}
     if(button.dataset.close){$('#'+button.dataset.close).close();return}
-    if(button.dataset.funnel){funnel=button.dataset.funnel;syncPipelines();renderLibrary();return}
-    if(button.dataset.tagFilter!==undefined){tagFilter=button.dataset.tagFilter;renderLibrary();return}
+    if(button.id==='funnel-btn'){toggleFunnelMenu();return}
+    if(button.dataset.funnel){funnel=button.dataset.funnel;closeFunnelMenu();syncPipelines();renderLibrary();return}
     if(button.id==='show-cancelled'){showCancelled=!showCancelled;renderLibrary();return}
     if(button.id==='sidebar-toggle'){setCollapsed(!document.body.classList.contains('sidebar-collapsed'));return}
     if(button.dataset.nav){navigate(button.dataset.nav);return}
@@ -423,7 +453,15 @@
     }
     if(button.dataset.viewPhoto){const [i,p]=button.dataset.viewPhoto.split(':').map(Number),photo=findQuote(selected)?.items[i]?.photos[p];if(photo){$('#photo-preview').src=photo;$('#photo-dialog').showModal()}}
   }
-  function syncPipelines(){for(const b of $$('[data-funnel]'))b.setAttribute('aria-pressed',String(b.dataset.funnel===funnel))}
+  function syncPipelines(){for(const b of $$('[data-funnel]')){b.setAttribute('aria-pressed',String(b.dataset.funnel===funnel));b.setAttribute('aria-checked',String(b.dataset.funnel===funnel))}}
+  // Funil em menu suspenso na segunda linha da barra do topo. O menu fica no body (a barra recorta o que passa dela).
+  function closeFunnelMenu(){const m=$('#funnel-menu');if(!m||m.hidden)return;m.hidden=true;$('#funnel-btn').setAttribute('aria-expanded','false')}
+  function toggleFunnelMenu(){
+    const m=$('#funnel-menu'),b=$('#funnel-btn');if(!m.hidden)return closeFunnelMenu();
+    if(m.parentElement!==document.body)document.body.append(m);
+    m.hidden=false;const r=b.getBoundingClientRect();m.style.left=Math.max(8,Math.min(innerWidth-m.offsetWidth-8,r.left))+'px';m.style.top=(r.bottom+8)+'px';
+    b.setAttribute('aria-expanded','true');m.querySelector('[aria-pressed=true]')?.focus();
+  }
   const remember=(key,value)=>{try{if(value===undefined)return localStorage.getItem(key);localStorage.setItem(key,value)}catch{return null}};
   function setCollapsed(collapsed){document.body.classList.toggle('sidebar-collapsed',collapsed);const label=collapsed?'Expandir menu':'Recolher menu',t=$('#sidebar-toggle');t.setAttribute('aria-label',label);t.title=label;t.setAttribute('aria-expanded',String(!collapsed));remember('hc-sidebar-collapsed',collapsed?'1':'0')}
   function bindSidebar(){
@@ -438,8 +476,10 @@
   }
   async function refreshGoogle(){
     if(!EcoAuth.online){$('#google-hint').textContent='Abra http://localhost:3000 para usar a agenda e o armazenamento do servidor.';$('#connect-google').onclick=()=>notify('Abra http://localhost:3000 para conectar a conta Google.');$('#logout').hidden=true;$('#migrate-local').hidden=true;return}
-    const g=await EcoAuth.api('/api/google/status');$('#google-account').textContent=g.email||'Nenhuma conta';$('#google-badge').textContent=g.connected?'Conectado':g.needsReconnect?'Reconectar':'Desconectado';$('#google-badge').className='int-pill '+(g.connected?'on':g.needsReconnect?'warn':'off');window.EcoSettings?.summary();$('#connect-google').textContent=g.connected?'Desconectar Google':g.needsReconnect?'Reconectar Google':'Conectar Google';
-    $('#google-hint').textContent=g.configured?'A confirmação cria o evento com o PDF anexado. Nenhum convite é enviado ao cliente.':'Falta cadastrar o aplicativo Google no servidor. Consulte docs/CONEXAO-GOOGLE.md na pasta do sistema.';
+    const g=await EcoAuth.api('/api/google/status');$('#google-account').textContent=g.email||'Nenhuma conta';const gLabel={connected:'Conectado',temporarily_unavailable:'Temporariamente indisponível',revoked:'Credencial revogada',config_error:'Erro de configuração',attention:'Atenção necessária',not_connected:'Desconectado',not_configured:'Não configurado'}[g.state]||(g.connected?'Conectado':g.needsReconnect?'Reconectar':'Desconectado');
+    $('#google-badge').textContent=gLabel;$('#google-badge').className='int-pill '+(g.state==='connected'?'on':['temporarily_unavailable','revoked','config_error','attention'].includes(g.state)||g.needsReconnect?'warn':'off');window.EcoSettings?.summary();$('#connect-google').textContent=g.connected?'Desconectar Google':g.needsReconnect?'Reconectar Google':'Conectar Google';
+    const gWhen=v=>v?new Date(v).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):null;
+    $('#google-hint').textContent=!g.configured?'Falta cadastrar o aplicativo Google no servidor. Consulte docs/CONEXAO-GOOGLE.md na pasta do sistema.':g.state==='revoked'?'O Google recusou a renovação do acesso (expirado ou revogado). Reconecte a mesma conta; agendamentos e PDFs foram preservados. Se isso se repetir a cada 7 dias, o app OAuth está em modo Testing no Google Cloud.':g.state==='temporarily_unavailable'?'O Google não respondeu na última tentativa. A conexão foi preservada e será usada de novo automaticamente.':g.state==='config_error'?'O Google recusou as credenciais do app (GOOGLE_CLIENT_ID/SECRET). Confira a configuração do servidor; não é preciso reconectar a conta.':'A confirmação cria o evento com o PDF anexado. Nenhum convite é enviado ao cliente.'+(g.lastSuccessfulAt?' Última operação bem-sucedida: '+gWhen(g.lastSuccessfulAt)+'.':'')+(g.tokenRefreshAt?' Acesso renovado automaticamente em '+gWhen(g.tokenRefreshAt)+'.':'');
     $('#connect-google').onclick=()=>busy($('#connect-google'),'Conectando...',async()=>{if(g.connected)confirmAction('Desconectar Google','Os eventos existentes serão preservados. Reconecte a mesma conta para reagendá-los ou cancelá-los.','Desconectar',async()=>{const result=await EcoAuth.api('/api/google/disconnect',{method:'POST',body:'{}'});await refreshGoogle();if(result.revocationSkipped)notify('Acesso local removido. A revogação no Google ficou manual para preservar Google Ads.');});else {const result=await EcoAuth.api('/api/google/connect',{method:'POST',body:'{}'});location.href=result.url}});
   }
   async function init(){
@@ -448,9 +488,10 @@
     const photo=document.createElement('dialog');photo.id='photo-dialog';photo.innerHTML='<div class="dialog-head"><h2>Foto do serviço</h2><button class="icon-button" data-close="photo-dialog" aria-label="Fechar foto">×</button></div><img id="photo-preview" class="photo-dialog-image" alt="Foto do item orçado">';document.body.appendChild(photo);
     document.addEventListener('click',e=>onClick(e).catch(error=>notify(error.message)));
     $('.skip-link').onclick=e=>{e.preventDefault();$('#content-start').focus();$('#content-start').scrollIntoView()};
-    let typing=0;$('#search').addEventListener('input',()=>{clearTimeout(typing);typing=setTimeout(renderLibrary,120)});for(const id of ['date-from','date-to'])$('#'+id).addEventListener('input',renderLibrary);bindBoard();bindBulk();bindSidebar();
-    $('#period-toggle').onclick=()=>{const expanded=$('#period-toggle').getAttribute('aria-expanded')==='true';$('#period-toggle').setAttribute('aria-expanded',String(!expanded));$('#period-fields').hidden=expanded};
-    $('#clear-filters').onclick=clearFilters;$('#show-demo').onclick=enterDemo;$('#exit-demo').onclick=exitDemo;
+    let typing=0;$('#search').addEventListener('input',()=>{clearTimeout(typing);typing=setTimeout(renderLibrary,120)});EcoFilters.mount($('#quotes-filters'),{scope:'quotes',dims:['origin','period','service','tag','status'],allowAll:true,onChange:()=>renderLibrary()});EcoFilters.extraRow($('#quotes-filters')).append(...$('#board-tools').childNodes);$('#board-tools').remove();
+    document.addEventListener('click',e=>{if(!e.target.closest('#funnel-menu,#funnel-btn'))closeFunnelMenu()});addEventListener('resize',closeFunnelMenu);$('#funnel-menu').addEventListener('keydown',e=>{if(e.key==='Escape'){closeFunnelMenu();$('#funnel-btn').focus()}});
+    bindBoard();bindBulk();bindSidebar();
+    $('#exit-demo').onclick=exitDemo;
     await refreshGoogle();
     $('#logout').onclick=()=>confirmAction('Sair do espaço','Salve as alterações antes de sair.','Sair',async()=>{await EcoAuth.api('/api/logout',{method:'POST',body:'{}'});location.reload()});
     $('#migrate-local').onclick=()=>confirmAction('Importar dados deste navegador','As propostas, fotos, PDFs locais serão copiados para o servidor. Os originais serão preservados. Agendamentos antigos precisarão de nova confirmação.','Importar meus dados',async()=>{
@@ -460,7 +501,7 @@
       const extras=await EcoLocalStore.exportExtras(list.map(q=>q.id)),settings=null;
       const result=await EcoAuth.api('/api/import?migration=yes',{method:'POST',body:JSON.stringify({version:3,proposals:list,settings,...extras})});await refresh();notify(result.imported+' orçamento(s) importado(s).');
     });
-    const params=new URLSearchParams(location.search);if(params.has('google')){notify(params.get('google')==='connected'?'Google conectado. Você já pode aprovar e agendar.':params.get('reason')||'Não foi possível conectar o Google.');history.replaceState(null,'',location.pathname+location.hash)}
+    const params=new URLSearchParams(location.search);if(params.has('google')){notify(params.get('google')==='connected'?'Google conectado. Você já pode aprovar e agendar.':params.get('google')==='contacts'?'Google Contatos autorizado. Clique em Importar contato → Google Contatos.':params.get('reason')||'Não foi possível conectar o Google.');history.replaceState(null,'',location.pathname+location.hash)}
 
     $('#schedule-form').onsubmit=reviewSchedule;$('#schedule-duration').onchange=()=>{$('#custom-duration-label').hidden=$('#schedule-duration').value!=='custom'};
     $('#schedule-dialog').addEventListener('close',()=>{review=null});
@@ -473,6 +514,7 @@
     window.addEventListener('eco:quotes-changed',()=>refresh().catch(error=>notify(error.message)));
     await refresh();hydrateIcons();fromHash();document.body.dataset.workspaceReady='true';window.UniversalFinance?.initSettings();window.UniversalDre?.initSettings();window.UniversalProfit?.initSettings();window.UniversalIntegrations?.init();window.EcoSettings?.init();
   }
-  window.EcoWorkspace={navigate,refresh,openDetail,icon,money,confirm:confirmAction};
+  // demo(): clientes fictícios para testes e prévias (o botão "Ver demonstração" saiu da tela).
+  window.EcoWorkspace={navigate,refresh,openDetail,icon,money,confirm:confirmAction,demo:enterDemo};
   if(window.EcoStudio)init().catch(error=>console.error(error));else window.addEventListener('eco:ready',()=>init().catch(error=>console.error(error)),{once:true});
 })();

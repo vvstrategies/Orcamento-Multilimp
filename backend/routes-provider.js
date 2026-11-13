@@ -1,5 +1,16 @@
 import {integrationError} from './integration-domain.js';
-import {placeFromAddress} from './address.js';
+import {fold,parseAddress,pickBest,precisionOf,searchText,streetCore} from './geocode-address.js';
+
+import {matchesRequestedPlace,geocodingQuery} from './geocode-validation.js';
+export {geocodingQuery};
+const evidence=c=>({label:c.label,place:{city:c.properties.locality||'',municipality:c.properties.localadmin||'',state:c.properties.region_a||'',postalCode:c.properties.postalcode||'',layer:c.properties.layer||'',street:c.properties.street||c.properties.name||'',number:c.properties.housenumber||'',accuracy:c.properties.accuracy||''}});
+const validCandidate=(address,c)=>matchesRequestedPlace(address,evidence(c));
+const chooseCandidate=(candidates,parsed,options)=>{
+ const best=pickBest(candidates,parsed,options);
+ if(best&&candidates.some(other=>other!==best&&other.coordinates!==best.coordinates&&other.properties.layer===best.properties.layer&&other.confidence===best.confidence&&Math.hypot(other.coordinates.longitude-best.coordinates.longitude,other.coordinates.latitude-best.coordinates.latitude)>0.01))throw integrationError('AMBIGUOUS_ADDRESS',400);
+ return best;
+};
+const scoreMatches=(a,b)=>fold(a)===fold(b)||fold(a).includes(fold(b))||fold(b).includes(fold(a));
 
 export const HEIGIT_DEFAULT_BASE_URL='https://api.heigit.org';
 const timeoutMs=10000;
@@ -34,56 +45,121 @@ const safeAddress=value=>{
  return value.trim().replace(/\s+/g,' ');
 };
 
-// Confidence rates the provider's match, not compliance with the requested municipality.
-const normalizePlace=value=>String(value||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim().toLowerCase();
-const postcode=value=>String(value||'').replace(/\D/g,'');
-export function matchesRequestedPlace(address,result){
- const expected=placeFromAddress(address),actual=result.place||{},label=placeFromAddress(result.label);
- const state=String(actual.state||label.state||'').toUpperCase().replace(/^BR-/,''),cities=[actual.city,actual.municipality,label.city].filter(Boolean).map(normalizePlace);
- if(expected.state&&state!==expected.state)return false;
- if(expected.city&&!cities.includes(normalizePlace(expected.city)))return false;
- const zip=/(?:^|[\s,])([0-9]{5}-?[0-9]{3})(?=$|[\s,])/.exec(address)?.[1];
- if(zip&&actual.postalCode&&postcode(zip)!==postcode(actual.postalCode))return false;
- // A city/state centroid cannot stand in for a street address.
- if(actual.layer&&!['address','street','venue'].includes(actual.layer))return false;
- return true;
-}
-
 /** Decoupled contract for providers that turn a full address into coordinates. */
 export class GeocodingProvider {
  constructor(){this.id='manual';this.configured=false;}
  async geocode(){throw integrationError('NOT_CONFIGURED',503);}
 }
 
+/**
+ * Reserva com o Nominatim (OpenStreetMap), usada só quando o Pelias acha apenas bairro/cidade.
+ * Política de uso: no máximo 1 consulta por segundo e User-Agent próprio. Só o endereço é enviado.
+ */
+const NOMINATIM_URL='https://nominatim.openstreetmap.org/search';
+let nominatimNext=0;
+const nominatimSlot=async()=>{const wait=nominatimNext-Date.now();nominatimNext=Math.max(Date.now(),nominatimNext)+1100;if(wait>0)await new Promise(r=>setTimeout(r,wait));};
+export class NominatimGeocoder extends GeocodingProvider {
+ constructor({fetcher=fetch,userAgent='orcamentos-geocoder/1.0',throttle=true}={}){super();this.id='nominatim';this.fetcher=fetcher;this.userAgent=userAgent;this.throttle=throttle;this.configured=true;}
+ async request(params){
+  const url=new URL(NOMINATIM_URL);
+  for(const [key,value] of Object.entries(params))if(value)url.searchParams.set(key,value);
+  for(const [key,value] of Object.entries({format:'jsonv2',addressdetails:'1',limit:'5',countrycodes:'br','accept-language':'pt-BR'}))url.searchParams.set(key,value);
+  if(this.throttle)await nominatimSlot();
+  let response;
+  try{response=await this.fetcher(url,{method:'GET',signal:AbortSignal.timeout(timeoutMs),redirect:'error',headers:{'User-Agent':this.userAgent,Accept:'application/json'}});}
+  catch{return [];}
+  if(!response?.ok)return [];
+  const body=await responseBody(response);
+  return (Array.isArray(body)?body:[]).map(item=>{
+   try{
+    const a=item.address||{},city=a.city||a.town||a.municipality||a.village||'',state=String(a['ISO3166-2-lvl4']||'').replace(/^BR-/,'');
+    const road=a.road||'',neighbourhood=a.suburb||a.neighbourhood||a.quarter||'';
+    const layer=a.house_number?'address':(item.category||item.class)==='highway'||road?'street':'locality';
+    const label=[road&&(a.house_number?road+', '+a.house_number:road),neighbourhood,city,state].filter(Boolean).join(', ')||String(item.display_name||'');
+    return {coordinates:coordinates({longitude:item.lon,latitude:item.lat}),label,confidence:null,properties:{layer,name:road,street:road,housenumber:a.house_number||'',neighbourhood,locality:city,region_a:state,postalcode:a.postcode||'',label}};
+   }catch{return null;}
+  }).filter(Boolean);
+ }
+ async geocode(address,{near=null}={}){
+  const parsed=parseAddress(safeAddress(address));
+  if(!parsed.street||!parsed.city)return null;
+  const attempts=[{street:[parsed.number,parsed.street].filter(Boolean).join(' '),city:parsed.city,state:parsed.state,country:'Brasil'},{q:[streetCore(parsed.street),parsed.city,parsed.state].filter(Boolean).join(', ')}];
+  let best=null,requests=0;
+  for(const params of attempts){
+   const candidates=await this.request(params);requests++;
+   const pick=chooseCandidate(candidates.filter(c=>['address','street'].includes(precisionOf(c.properties.layer))&&validCandidate(address,c)),parsed,{near});
+   if(pick&&(!best||pick.score>best.score))best={...pick,query:params.q?'osm-street-name':'osm-structured'};
+   if(best)break;
+  }
+  if(!best)return null;
+  const city=best.properties.locality;
+  if(city&&!scoreMatches(city,parsed.city))return null;
+  const precision=precisionOf(best.properties.layer);
+  return {coordinates:best.coordinates,...evidence(best),confidence:null,precision,layer:best.properties.layer,approximate:precision!=='address',query:best.query,requests,provider:this.id,geocodedAt:new Date().toISOString(),quota:null};
+ }
+}
+
 /** Server-side Pelias client. Only the address is sent to HeiGIT. */
 export class HeiGITPeliasGeocoder extends GeocodingProvider {
- constructor({apiKey='',baseUrl=HEIGIT_DEFAULT_BASE_URL,fetcher=fetch}={}){
-  super();this.id='heigit_pelias';this.apiKey=String(apiKey||'').trim();this.baseUrl=cleanBase(baseUrl);this.fetcher=fetcher;this.configured=!!this.apiKey;
+ constructor({apiKey='',baseUrl=HEIGIT_DEFAULT_BASE_URL,fetcher=fetch,fallback=null}={}){
+  super();this.id='heigit_pelias';this.apiKey=String(apiKey||'').trim();this.baseUrl=cleanBase(baseUrl);this.fetcher=fetcher;this.fallback=fallback;this.configured=!!this.apiKey;
  }
  isValidResult(address,result){return matchesRequestedPlace(address,result);}
- async geocode(address){
-  const query=safeAddress(address);
-  if(!this.configured)throw integrationError('NOT_CONFIGURED',503);
-  const url=new URL('/pelias/v1/search',this.baseUrl);
-  url.searchParams.set('text',query);url.searchParams.set('size','5');url.searchParams.set('lang','pt');url.searchParams.set('boundary.country','BR');
+ async request(path,params,near){
+  const url=new URL('/pelias/v1/'+path,this.baseUrl);
+  for(const [key,value] of Object.entries(params))if(value)url.searchParams.set(key,value);
+  url.searchParams.set('size','8');url.searchParams.set('lang','pt');url.searchParams.set('boundary.country','BR');
+  if(near){url.searchParams.set('focus.point.lat',String(near.latitude));url.searchParams.set('focus.point.lon',String(near.longitude));}
   let response;
   try{response=await this.fetcher(url,{method:'GET',signal:AbortSignal.timeout(timeoutMs),redirect:'error',headers:{Authorization:this.apiKey,Accept:'application/json'}});}
   catch(error){throw integrationError(['TimeoutError','AbortError'].includes(error?.name)?'TIMEOUT':'EXTERNAL',503);}
   const body=await responseBody(response);
   if(!response?.ok)throw requestError(response,body);
-  const matches=(Array.isArray(body.features)?body.features:[]).map(feature=>{
+  const candidates=(Array.isArray(body.features)?body.features:[]).map(feature=>{
    try{
-    const point=coordinates(feature?.geometry?.coordinates);
-    const properties=feature?.properties||{},confidence=properties.confidence==null?null:Number(properties.confidence);
-    return {coordinates:point,label:typeof properties.label==='string'?properties.label:'',confidence:Number.isFinite(confidence)?confidence:null,place:{city:properties.locality||'',municipality:properties.localadmin||'',state:properties.region_a||'',postalCode:properties.postalcode||'',layer:properties.layer||'',accuracy:properties.accuracy||''}};
+    const point=coordinates(feature?.geometry?.coordinates),properties=feature?.properties||{},confidence=Number(properties.confidence);
+    return {coordinates:point,label:typeof properties.label==='string'?properties.label:'',confidence:Number.isFinite(confidence)?confidence:null,properties};
    }catch{return null;}
   }).filter(Boolean);
-  if(!matches.length)throw integrationError('INVALID_ADDRESS',400);
-  const eligible=matches.filter(match=>this.isValidResult(query,match));
-  if(!eligible.length)throw Object.assign(integrationError('AMBIGUOUS_ADDRESS',400),{message:'A localização encontrada não corresponde à cidade, ao estado ou ao CEP informado. Confira o endereço ou informe a distância manualmente.'});
-  const first=eligible[0],second=eligible[1];
-  if((first.confidence!==null&&first.confidence<0.4)||(second&&first.confidence!==null&&second.confidence!==null&&Math.abs(first.confidence-second.confidence)<0.02&&Math.abs(first.coordinates.longitude-second.coordinates.longitude)+Math.abs(first.coordinates.latitude-second.coordinates.latitude)>0.01))throw integrationError('AMBIGUOUS_ADDRESS',400);
-  return {...first,provider:this.id,geocodedAt:new Date().toISOString(),quota:quota(response)};
+  return {candidates,quota:quota(response)};
+ }
+ /**
+  * Tenta, nesta ordem e só enquanto o ponto for impreciso: texto normalizado,
+  * busca estruturada e "rua, cidade". Escolhe pelo que o endereço cita (cidade,
+  * bairro, UF, CEP, número) e desempata pela proximidade da sede (`near`).
+  */
+ async geocode(address,{near=null}={}){
+  const query=safeAddress(address);
+  if(!this.configured)throw integrationError('NOT_CONFIGURED',503);
+  const parsed=parseAddress(query);
+  if(!parsed.city||!parsed.state)throw Object.assign(integrationError('INVALID_ADDRESS',400),{message:'Informe rua, número, cidade e UF no endereço.'});
+  const attempts=[{path:'search',params:{text:searchText(parsed)||query},kind:'text'}];
+  if(parsed.street&&parsed.city){
+   attempts.push({path:'search/structured',params:{address:[parsed.street,parsed.number].filter(Boolean).join(' '),neighbourhood:parsed.neighborhood,locality:parsed.city,region:parsed.state,postalcode:parsed.postalCode,country:'BRA'},kind:'structured'});
+   attempts.push({path:'search',params:{text:[parsed.street,parsed.city+(parsed.state?' - '+parsed.state:'')].join(', ')},kind:'street'});
+   // Último recurso: só o nome da rua na cidade, entre ruas ("Fazendinha" acha "Estrada da Fazendinha").
+   const core=streetCore(parsed.street);
+   if(core&&fold(core)!==fold(parsed.street))attempts.push({path:'search',params:{text:[core,parsed.city+(parsed.state?' - '+parsed.state:'')].join(', '),layers:'street'},kind:'street-name'});
+  }
+  let best=null,lastQuota=null,requests=0;
+  for(const attempt of attempts){
+   const {candidates,quota:q}=await this.request(attempt.path,attempt.params,near);requests++;lastQuota=q||lastQuota;
+   const eligible=candidates.filter(c=>validCandidate(query,c));
+   const pick=chooseCandidate(eligible,parsed,{near});
+   if(pick&&(!best||pick.score>best.score))best={...pick,query:attempt.kind};
+   if(best&&['address','street'].includes(precisionOf(best.properties.layer))&&best.score>=30)break;
+  }
+  // Pelias só achou bairro/cidade (ou nada): tenta a reserva do OpenStreetMap antes de aceitar o ponto aproximado.
+  if(this.fallback&&(!best||!['address','street'].includes(precisionOf(best.properties.layer)))){
+   const osm=await this.fallback.geocode(query,{near}).catch(()=>null);
+   if(osm&&this.isValidResult(query,osm))return {...osm,requests,quota:null};
+  }
+  if(!best)throw Object.assign(integrationError('AMBIGUOUS_ADDRESS',400),{message:'O mapa não encontrou uma rua compatível com a cidade/UF e o CEP do cadastro. Confira o endereço ou informe a distância manualmente.'});
+  const p=best.properties,city=p.locality||p.localadmin||p.county||'';
+  // Ponto em outra cidade/UF do que o endereço diz é pior que nenhum ponto.
+  if(parsed.city&&city&&!scoreMatches(city,parsed.city))throw Object.assign(integrationError('AMBIGUOUS_ADDRESS',400),{message:`O endereço "${query}" foi localizado em ${city}, não em ${parsed.city}. Confira o endereço ou informe a distância manualmente.`});
+  const precision=precisionOf(p.layer);
+  return {coordinates:best.coordinates,...evidence(best),confidence:best.confidence,precision,layer:p.layer||'',approximate:precision!=='address',query:best.query,requests,provider:this.id,geocodedAt:new Date().toISOString(),quota:lastQuota};
  }
 }
 

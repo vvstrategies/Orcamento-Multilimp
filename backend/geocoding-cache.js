@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import {addressKey} from './finance-domain.js';
 import {integrationError} from './integration-domain.js';
+import {GEOCODER_VERSION} from './geocode-address.js';
 
 const day=()=>new Date().toISOString().slice(0,10);
 const validAddress=value=>{
@@ -13,6 +14,9 @@ const safeCoordinates=value=>{
  return {longitude,latitude};
 };
 const parse=row=>row?JSON.parse(row.data):null;
+// Registros de versões anteriores do geocodificador ficavam salvos sem prazo, inclusive
+// pontos no centro da cidade. Só reaproveite o que a versão atual produziu.
+const current=value=>value?.version===GEOCODER_VERSION;
 
 /** Persistent cache for neutral address → coordinate records. */
 export class GeocodingCache {
@@ -22,10 +26,10 @@ export class GeocodingCache {
  metric(kind){const today=day();this.repo.db.prepare('INSERT INTO finance_route_metrics (day,kind,count,updated_at) VALUES (?,?,1,?) ON CONFLICT(day,kind) DO UPDATE SET count=count+1,updated_at=excluded.updated_at').run(today,kind,new Date().toISOString());}
  quota(provider,value){if(!value||[value.limit,value.remaining,value.reset].every(v=>v===null||v===undefined))return;this.repo.db.prepare('INSERT INTO finance_route_quota (provider,kind,limit_value,remaining,reset_value,updated_at) VALUES (?,?,?,?,?,?) ON CONFLICT(provider,kind) DO UPDATE SET limit_value=excluded.limit_value,remaining=excluded.remaining,reset_value=excluded.reset_value,updated_at=excluded.updated_at').run(provider,'geocoding',value.limit??null,value.remaining??null,value.reset??null,new Date().toISOString());}
  usage(){return this.repo.db.prepare('SELECT kind,count FROM finance_route_metrics WHERE day=?').all(day()).reduce((out,row)=>({...out,[row.kind]:row.count}),{});}
- current(address,value){return !!value&&value.addressKey===addressKey(address)&&(!this.provider?.isValidResult||this.provider.isValidResult(address,value));}
+ current(address,value){return current(value)&&value.addressKey===addressKey(address)&&(!this.provider?.isValidResult||this.provider.isValidResult(address,value));}
  subject(type,id){return parse(this.repo.db.prepare('SELECT data FROM finance_geocodes WHERE subject_type=? AND subject_id=?').get(type,id));}
  save(type,id,key,value){this.repo.db.prepare('INSERT INTO finance_geocodes (id,geocode_key,subject_type,subject_id,data,created_at) VALUES (?,?,?,?,?,?) ON CONFLICT(subject_type,subject_id) DO UPDATE SET geocode_key=excluded.geocode_key,data=excluded.data,created_at=excluded.created_at').run(crypto.randomUUID(),key,type,id,JSON.stringify(value),new Date().toISOString());}
- async get(address,{subjectType='address',subjectId=null,force=false}={}){
+ async get(address,{subjectType='address',subjectId=null,force=false,near=null}={}){
   const snapshot=validAddress(address),key=addressKey(snapshot),id=String(subjectId||key).slice(0,240),subject=String(subjectType||'address').slice(0,80);
   const saved=this.subject(subject,id);
   if(!force&&this.current(snapshot,saved)){this.metric('geocoding_cache_hit');return {...saved,cached:true};}
@@ -38,11 +42,11 @@ export class GeocodingCache {
    const used=this.repo.db.prepare("SELECT count FROM finance_route_metrics WHERE day=? AND kind='geocoding_external'").get(day())?.count||0;
    if(used>=this.dailyLimit)throw integrationError('QUOTA',429);
    try{
-    const result=await this.provider.geocode(snapshot),coordinates=safeCoordinates(result.coordinates),value={addressKey:key,addressSnapshot:snapshot,coordinates,provider:result.provider||this.provider.id,geocodedAt:result.geocodedAt||new Date().toISOString(),label:typeof result.label==='string'?result.label:'',confidence:Number.isFinite(result.confidence)?result.confidence:null,...(result.place?{place:result.place}:{})};
+    const result=await this.provider.geocode(snapshot,near?{near}:undefined),coordinates=safeCoordinates(result.coordinates),value={addressKey:key,addressSnapshot:snapshot,coordinates,provider:result.provider||this.provider.id,geocodedAt:result.geocodedAt||new Date().toISOString(),label:typeof result.label==='string'?result.label:'',confidence:Number.isFinite(result.confidence)?result.confidence:null,precision:typeof result.precision==='string'?result.precision:null,approximate:result.approximate===true,version:GEOCODER_VERSION,...(result.place?{place:result.place}:{})};
     this.metric('geocoding_external');this.quota(value.provider,result.quota);this.save('address',key,key,value);this.save(subject,id,key,value);return {...value,cached:false};
    }catch(error){this.metric('geocoding_error');throw error;}
   })();
   this.pending.set(pendingKey,task);try{return await task}finally{this.pending.delete(pendingKey);}
  }
- async rememberCompany(address){if(typeof address!=='string'||!address.trim())return null;return this.get(address,{subjectType:'company',subjectId:'operational'});}
+ async rememberCompany(address,{force=false}={}){if(typeof address!=='string'||!address.trim())return null;return this.get(address,{subjectType:'company',subjectId:'operational',force});}
 }

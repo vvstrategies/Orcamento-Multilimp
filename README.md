@@ -43,3 +43,6 @@ Consulte INTEGRATIONS_SETUP.md para configurar Google Calendar e Drive, Asaas, r
 - npm test valida orçamento, PDF, sessão, financeiro, rotas, integrações e pagamentos com dados de teste.
 
 Para publicar, use armazenamento persistente, HTTPS e APP_ORIGIN com a URL pública exata. O diretório DATA_DIR e a chave GOOGLE_TOKEN_ENCRYPTION_KEY precisam permanecer estáveis após a primeira conexão Google.
+## Atualização da matriz — 13/11/2026
+
+Interface e recursos sincronizados com Herboclean `72ab6d9` (12/11/2026), preservando a marca, os cadastros e as integrações próprias desta empresa. Veja [o relatório de atualização](docs/ATUALIZACAO-MATRIZ-20261113.md).

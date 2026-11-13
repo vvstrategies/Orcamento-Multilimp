@@ -10,10 +10,11 @@ import {registerProfit} from './profit-routes.js';
 import {CommercialService,registerCommercial} from './commercial.js';
 import {AvatarService,registerAvatars} from './avatars.js';
 import {DreService} from './dre-service.js';
+import {ReceiptStore,registerReceipts} from './receipts.js';
 import {registerDre} from './dre-routes.js';
 import {financialDemo} from './finance-demo.js';
 import {FinanceService} from './finance-service.js';
-import {HeiGITOpenRouteServiceProvider,HeiGITPeliasGeocoder} from './routes-provider.js';
+import {HeiGITOpenRouteServiceProvider,HeiGITPeliasGeocoder,NominatimGeocoder} from './routes-provider.js';
 import {CepLookupService} from './cep-cache.js';
 import {BrasilApiCepProvider,ViaCepProvider} from './cep-provider.js';
 import path from 'node:path';
@@ -27,6 +28,8 @@ import {Service} from './service.js';
 import {modelo} from '../utils/proposta.js';
 import {gerarPDFMultilimp} from '../utils/multilimpPdf.js';
 import {migrateServiceCatalog} from './service-catalog.js';
+import {registerPublicPages} from './public-pages.js';
+import {registerAbordagens} from './abordagens.js';
 import {initializeInstallation,completed,finishSetup,validateSettings} from './onboarding.js';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const publicPDF=({storageKey,...pdf})=>pdf;
@@ -40,9 +43,10 @@ export function createApp(options={}){
   migrateServiceCatalog(repo);
   const tokenVault=vault(repo.dir,options.encryptionKey,production);
   const google=options.google||new GoogleIntegration(repo,tokenVault,options.googleConfig,options.fetcher);
-  const service=new Service(repo,google),sec=security(repo,{origin,production}),app=express();
+  const service=new Service(repo,google),sec=security(repo,{origin,production,legacyHosts:options.legacyHosts||[]}),app=express();
   const cepLookup=options.cepLookup||new CepLookupService(repo,{primary:new BrasilApiCepProvider({fetcher:options.fetcher||globalThis.fetch}),fallback:new ViaCepProvider({fetcher:options.fetcher||globalThis.fetch})});
-  const geocoder=options.geocoder||new HeiGITPeliasGeocoder(options.routesConfig);
+  // Reserva do OpenStreetMap só quando ligada (produção); testes e pré-visualização nunca saem para a rede.
+  const geocoder=options.geocoder||new HeiGITPeliasGeocoder({...options.routesConfig,fallback:options.routesConfig?.osmFallback?new NominatimGeocoder():null});
   const finance=new FinanceService(repo,service,options.routeProvider||new HeiGITOpenRouteServiceProvider(options.routesConfig),{dailyLimit:options.routesConfig?.dailyLimit,directionsDailyLimit:options.routesConfig?.directionsDailyLimit,geocodingDailyLimit:options.routesConfig?.geocodingDailyLimit,routeCacheHours:options.routesConfig?.cacheHours,geocoder:options.routeProvider&&options.geocoder===undefined?null:geocoder});
   const dre=new DreService(repo,finance),profit=new ProfitService(repo,finance,dre,service);service.onComplete=(id,day)=>{const value=dre.recognize(id,day);profit.captureContext(id);return value;};
   const asaas=new AsaasService(repo,options.asaasConfig,options.asaasFetcher||options.fetcher||globalThis.fetch);
@@ -57,6 +61,7 @@ export function createApp(options={}){
   // A Asaas chama esta rota sem sessão do navegador. O token próprio do webhook é validado no serviço.
   app.post('/api/webhooks/asaas',wrap(async(req,res)=>{await asaas.webhook(req.headers['asaas-access-token'],req.body);res.status(204).end();}));
   app.get('/api/health',(req,res)=>res.json({status:'ok',product:'multilimp'}));
+  registerPublicPages(app,()=>repo.config('settings')?.company);
   app.get('/api/session',(req,res)=>res.json({...sec.status(req),needsCompanySetup:!!req.session&&!completed(repo)}));
   app.post('/api/setup',sec.sameOrigin,wrap(sec.setup));app.post('/api/login',sec.sameOrigin,wrap(sec.login));
   app.use('/api',sec.requireAuth,sec.csrf,largeJson);app.post('/api/logout',sec.logout);
@@ -70,7 +75,7 @@ export function createApp(options={}){
   app.post('/api/onboarding',wrap(async(req,res)=>{const value=await finishSetup(repo,keepLogo(req.body,repo.config('companySetupDraft')));await finance.rememberCompanyAddress(value.company?.location||'').catch(()=>null);res.json(value)}));
   app.use('/api',(req,res,next)=>completed(repo)?next():res.status(428).json({code:'COMPANY_SETUP_REQUIRED',error:'Configure a empresa para continuar.'}));
   registerAsaas(app,asaas,wrap);
-  registerDre(app,dre,wrap);
+  dre.receipts=new ReceiptStore(repo);registerReceipts(app,{store:dre.receipts,dre},wrap);registerDre(app,dre,wrap);
   registerIntegrations(app,integrations,wrap);
   registerProfit(app,profit,wrap);
   registerCommercial(app,commercial,wrap);registerAvatars(app,new AvatarService(repo,commercial),wrap);
@@ -80,6 +85,8 @@ export function createApp(options={}){
   app.get('/api/proposals/:id/finance',(req,res)=>res.json(finance.view(req.params.id)));
   app.put('/api/proposals/:id/finance',wrap(async(req,res)=>res.json(await finance.calculate(req.params.id,req.body))));
   app.post('/api/proposals/:id/finance/refresh',wrap(async(req,res)=>res.json(await finance.refreshAutomatically(req.params.id))));
+  app.get('/api/finance/company-location',(req,res)=>res.json({location:finance.companyLocation()}));
+  app.post('/api/finance/company-location/refresh',wrap(async(req,res)=>res.json(await finance.refreshCompanyLocation())));
   app.post('/api/proposals/:id/finance/route',wrap(async(req,res)=>res.json(await finance.route(req.params.id,req.body))));
   app.get('/api/financial-export',(req,res)=>{res.set('Cache-Control','no-store');res.json({...profit.export(),integrations:integrations.export()});});
   app.get('/api/settings',(req,res)=>res.json(lite(req,settings())));
@@ -106,8 +113,9 @@ export function createApp(options={}){
   app.post('/api/proposals/:id/schedule/cancel',wrap(async(req,res)=>res.json(await service.cancelSchedule(req.params.id,req.body))));
   app.post('/api/proposals/:id/status',wrap(async(req,res)=>res.json(await service.status(req.params.id,req.body.status,req.body))));
   app.get('/api/google/status',(req,res)=>res.json(google.status()));
-  app.post('/api/google/connect',(req,res)=>res.json(google.connect(req.session)));
-  app.get('/api/google/callback',wrap(async(req,res)=>{try{await google.callback(req.query,req.session);res.redirect('/?google=connected#configuracoes')}catch(error){res.redirect('/?google=error&reason='+encodeURIComponent(error.status?error.message:'Não foi possível conectar. Tente novamente.')+'#configuracoes')}}));
+  app.post('/api/google/connect',(req,res)=>res.json(google.connect(req.session,{purpose:req.body?.purpose})));
+  app.get('/api/google/contacts',wrap(async(req,res)=>{res.set('Cache-Control','no-store');res.json(await google.contacts({pageToken:req.query.pageToken,query:req.query.q}))}));
+  app.get('/api/google/callback',wrap(async(req,res)=>{try{const r=await google.callback(req.query,req.session);res.redirect(r.purpose==='contacts'?'/?google=contacts#criar':'/?google=connected#configuracoes')}catch(error){res.redirect('/?google=error&reason='+encodeURIComponent(error.status?error.message:'Não foi possível conectar. Tente novamente.')+(error.purpose==='contacts'?'#criar':'#configuracoes'))}}));
   app.post('/api/google/disconnect',wrap(async(req,res)=>{if(service.locks.size)throw fail(409,'Aguarde as operações em andamento antes de desconectar.');res.json(await google.disconnect())}));
   app.get('/api/backup',(req,res)=>res.json({version:4,settings:settings(),proposals:repo.list(),draft:repo.config('draft'),operations:repo.listOperations(),documents:repo.listPDFs().map(p=>({...publicPDF(p),data:'data:application/pdf;base64,'+fs.readFileSync(repo.file(p)).toString('base64')}))}));
   app.post('/api/import',wrap(async(req,res)=>{
@@ -123,12 +131,18 @@ export function createApp(options={}){
       for(const {q} of proposals)commercial.safeSync(repo.proposal(q.id));res.json({imported:proposals.length,proposals:proposals.map(({q})=>repo.proposal(q.id))});
     }catch(error){for(const p of staged){const file=path.join(repo.files,p.storage);if(fs.existsSync(file))fs.unlinkSync(file)}throw error}
   }));
+  registerAbordagens(app,{repo}); // Temporário: Black Friday 2026 (remover depois da campanha).
   app.use('/api',(req,res)=>res.status(404).json({error:'Recurso não encontrado.'}));
   const allowed=new Set(fs.readdirSync(path.join(root,'public')).filter(n=>/\.(html|css|js)$/.test(n)));
   // Na Hostinger, public/ é servido direto pelo CDN, sem Cache-Control e ignorando query string; a versão no caminho passa pelo app e muda a cada deploy.
   const assetHash=crypto.createHash('sha256');for(const n of [...allowed].sort())assetHash.update(fs.readFileSync(path.join(root,'public',n)));const assetVersion=assetHash.digest('hex').slice(0,10);
   const indexHtml=fs.readFileSync(path.join(root,'public/index.html'),'utf8').replace(/(src|href)="([a-zA-Z0-9_.-]+\.(?:js|css))"/g,`$1="v/${assetVersion}/$2"`);
   app.get('/',(req,res)=>res.set('Cache-Control','no-cache').type('html').send(indexHtml));
+  // PWA: o manifesto sai pelo Express (fora de public/) para ter o tipo certo também atrás do CDN da Hostinger.
+  const manifest=JSON.stringify({name:'Multilimp Higienização · Orçamentos',short_name:'Multilimp Higienização',description:'Orçamentos, agenda e financeiro da Multilimp Higienização.',lang:'pt-BR',start_url:'/',scope:'/',display:'standalone',orientation:'portrait',background_color:'#07111f',theme_color:'#07111f',icons:[{src:'/assets/app-icon-192.png',sizes:'192x192',type:'image/png',purpose:'any'},{src:'/assets/app-icon-512.png',sizes:'512x512',type:'image/png',purpose:'any'},{src:'/assets/app-icon-512.png',sizes:'512x512',type:'image/png',purpose:'maskable'}]});
+  app.get('/manifest.webmanifest',(req,res)=>res.set('Cache-Control','no-cache').type('application/manifest+json').send(manifest));
+  // O service worker precisa ficar na raiz (escopo /) e sem a versão no caminho.
+  app.get('/sw.js',(req,res)=>res.set({'Cache-Control':'no-cache','Service-Worker-Allowed':'/'}).type('application/javascript').sendFile(path.join(root,'public/sw.js')));
   app.get('/guia-integracoes',sec.requireAuth,(req,res)=>res.type('text/plain; charset=utf-8').sendFile(path.join(root,'INTEGRATIONS_SETUP.md')));
   app.get('/guia-google',sec.requireAuth,(req,res)=>res.type('text/plain').sendFile(path.join(root,'docs/CONEXAO-GOOGLE.md')));
   // Só a versão atual existe: o conteúdo de /v/<hash>/ nunca muda e pode ficar em cache por um ano.
@@ -140,7 +154,7 @@ export function createApp(options={}){
   app.use((error,req,res,next)=>{
     if(res.headersSent)return next(error);
     if(!error.status){console.error(`Erro em ${req.method} ${req.path}:`,error.stack||error);return res.status(500).json({error:'Erro interno. Tente novamente em instantes.'})}
-    res.status(error.status).json({error:bodyErrors[error.type]||error.message});
+    res.status(error.status).json({error:bodyErrors[error.type]||error.message,...(typeof error.code==='string'&&/^[A-Z_]{3,40}$/.test(error.code)?{code:error.code}:{})});
   });
   // Tarefas de manutenção: chamadas pelo servidor depois de começar a atender, sem atrasar createApp.
   const sweep=()=>{try{sec.sweep()}catch(error){console.error('Falha ao limpar sessões expiradas:',error)}};

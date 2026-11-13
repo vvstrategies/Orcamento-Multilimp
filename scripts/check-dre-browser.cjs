@@ -21,16 +21,19 @@ module.exports=async function({evaluate,click,set,until,screenshot,send,download
  await click('[data-mode="projected"]');await until("document.querySelector('.dre-result')?.textContent.includes('650,00')");
  await click('#dre-csv');const csv=await downloadFile('DRE-gerencial-interna-'+await evaluate('EcoOperations.localDate().slice(0,7)')+'-'+await evaluate('EcoOperations.localDate().slice(0,7)')+'.csv');assert.ok(fs.readFileSync(csv,'utf8').includes('Aluguel de teste'));
  await click('#dre-pdf');const pdf=await downloadFile('DRE-gerencial-interna-'+await evaluate('EcoOperations.localDate().slice(0,7)')+'-'+await evaluate('EcoOperations.localDate().slice(0,7)')+'.pdf');assert.equal(fs.readFileSync(pdf).subarray(0,5).toString(),'%PDF-');
- await click('#dre-demo');await until("document.querySelector('#dre-content').textContent.includes('Demonstração fictícia')");
+ await evaluate('UniversalDre.toggleDemo()');await until("document.querySelector('#dre-alerts').textContent.includes('Demonstração fictícia')");
  assert.equal(await evaluate("document.querySelector('#dre-new-expense').disabled"),true);
  await screenshot('dre-statement-desktop');
  await click('[data-dre-tab="overview"]');await until("!!document.querySelector('#dre-chart path')");
  await screenshot('dre-overview-desktop');
  await send('Emulation.setDeviceMetricsOverride',{width:390,height:844,deviceScaleFactor:1,mobile:true});assert.equal(await evaluate('document.documentElement.scrollWidth<=390'),true);await screenshot('dre-overview-mobile');
  await click('[data-dre-tab="statement"]');await until("!!document.querySelector('.dre-result')");assert.equal(await evaluate('document.documentElement.scrollWidth<=390'),true);await evaluate("document.querySelector('.dre-result').scrollIntoView({block:'center'})");await screenshot('dre-statement-mobile');
+ // Subabas da DRE detalhada: categorias e o gráfico mensal ficam em "Despesas e evolução".
+ await click('[data-sub="evolution"]');await until("!!document.querySelector('.mchart .mc-col')");assert.equal(await evaluate('document.documentElement.scrollWidth<=390'),true);await screenshot('dre-evolution-mobile');
  await click('[data-category-drill]');await until("document.querySelector('#dre-dialog').open");assert.equal(await evaluate("document.querySelector('#dre-dialog').scrollWidth<=390"),true);await screenshot('dre-drill-mobile');await click('#dre-dialog [data-close]');
- await click('#dre-demo');await until("!document.querySelector('#dre-new-expense').disabled");
+ await evaluate('UniversalDre.toggleDemo()');await until("!document.querySelector('#dre-new-expense').disabled");
  await click('#dre-new-expense');await until("document.querySelector('#dre-dialog').open");assert.equal(await evaluate("document.querySelector('#dre-dialog').scrollWidth<=390"),true);await screenshot('dre-expense-mobile');await click('#dre-dialog [data-close]');
- await click('[data-nav="settings"]');await until("!!document.querySelector('#dre-settings-slot form')");await set('#dre-settings-slot [name=taxRate]','6');await click('#dre-settings-slot [name=components][value=maintenance]');await evaluate("document.querySelector('#dre-settings-slot form').requestSubmit()");await until("EcoAuth.api('/api/finance/settings').then(s=>s.taxRateBps===600)");assert.equal(await evaluate('document.documentElement.scrollWidth<=390'),true);
+ // Premissas da DRE agora ficam no card único de Custos e financeiro (item 16).
+ await click('[data-nav="settings"]');await evaluate("EcoSettings.show('finance')");await until("!!document.querySelector('#financial-settings-form [name=taxRate]')");await set('#financial-settings-form [name=taxRate]','6');await click('#financial-settings-form [name=components][value=maintenance]');await evaluate("document.querySelector('#financial-settings-form').requestSubmit()");await until("EcoAuth.api('/api/finance/settings').then(s=>s.taxRateBps===600)");assert.equal(await evaluate('document.documentElement.scrollWidth<=390'),true);
  console.log('PASS: telas DRE desktop/mobile, despesas, pagamento separado da competência, recorrência, realizado/projetado, drill-down, CSV/PDF, demonstração e premissas.');
 };
